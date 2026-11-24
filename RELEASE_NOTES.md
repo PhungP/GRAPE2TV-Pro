@@ -1,0 +1,6 @@
+- Cửa sổ Cài đặt: gọn hơn, chia thẻ (Giao diện / Nền / Cập nhật / Hệ thống), chữ nhỏ hơn; con trỏ chỉ di chuyển trong cửa sổ
+- Thêm hình nền từ nguồn miễn phí (ảnh ngẫu nhiên Picsum/Unsplash, ảnh Bing mỗi ngày)
+- Thêm bảo vệ màn hình (đồng hồ dịch chuyển, 2/5/10/30 phút)
+- Bố cục mới: Thư viện âm nhạc thu thành ô vuông bên trái, hộp Đang phát ở giữa màn hình, thêm ô Tiếp theo bên phải
+- Bỏ chữ "Trình phát nhạc" dưới ô GRAPE2Play
+- "Kiểm tra nhạc" báo chi tiết app nhạc cung cấp những thông tin nào

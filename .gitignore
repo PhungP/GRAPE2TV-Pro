@@ -1,0 +1,13 @@
+# Khoá ký — không bao giờ đưa lên git
+*.keystore
+*.jks
+keystore.properties
+
+# Máy cá nhân / công cụ
+.DS_Store
+.idea/
+local.properties
+.gradle/
+build/
+app/release/
+web/node_modules/
