@@ -1,0 +1,3 @@
+- Hộp Đang phát gọn hơn: bỏ dòng "Mở GRAPE2Play" và nút tua, chỉ còn Bài trước / Phát-Tạm dừng / Bài tiếp
+- Hộp Cài đặt thu nhỏ, đặt ở góc phải màn hình
+- Khoá ký không còn nằm trong mã nguồn
