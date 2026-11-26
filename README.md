@@ -1,31 +1,45 @@
-# GRAPE2Launcher Lite — Android TV
+# GRAPE2TV Pro – Android TV Launcher
 
-Launcher thay màn hình chính cho Android TV / TV box: đồng hồ, thời tiết Hải Phòng, dải "Đang phát" (đọc nhạc thật từ GRAPE2Play hoặc bất kỳ app nhạc nào), lưới ứng dụng thật trên TV, 2 giao diện Liquid Glass / Xperia, cập nhật APK từ GitHub Releases.
+Launcher thay màn hình chính cho Android TV / TV box: đồng hồ, thời tiết Hải Phòng, Music Center "Đang phát" (đọc nhạc thật từ GRAPE2Play hoặc bất kỳ app nhạc nào), lưới ứng dụng thật trên TV, 2 giao diện Liquid Glass / Xperia, cập nhật APK từ GitHub Releases.
 
-## Build APK (Android Studio)
-Mở thư mục này bằng Android Studio → **Build > Generate Signed App Bundle / APK > APK** → chọn file khoá của bạn (release) → build. Nếu sửa giao diện web: `cd web && npm install && npm run build` trước (đã build sẵn trong `app/src/main/assets/web`).
-Muốn `./gradlew assembleRelease` tự ký: sao chép `keystore.properties.example` thành `keystore.properties` và điền thông tin khoá (file này và `*.keystore` đã nằm trong `.gitignore`, không đưa lên git).
+Định hướng: **nhẹ · mượt · nhanh · cao cấp** — ưu tiên TV box cấu hình thấp.
+
+> Tên cũ: GRAPE2Launcher Lite. Gói ứng dụng (`com.grape.launcher`), khoá ký và dữ liệu người dùng giữ nguyên nên cài đè được lên bản cũ.
+
+## Build
+```bash
+cd web && npm ci && npx tsc --noEmit && npm run build   # build giao diện vào app/src/main/assets/web
+cd .. && ./gradlew assembleRelease                      # APK: app/build/outputs/apk/release/GRAPE2TV-Pro-<ver>-release*.apk
+```
+Ký bản phát hành: sao chép `keystore.properties.example` thành `keystore.properties` và điền thông tin khoá **hiện có** (file này và `*.keystore` nằm trong `.gitignore`). Phải dùng đúng một khoá cho mọi bản, nếu không TV sẽ không cho cài đè. Không có khoá → APK chưa ký (không cài/OTA được).
+Bản release bật R8 + rút gọn tài nguyên (`app/proguard-rules.pro` giữ các phương thức `@JavascriptInterface`).
 
 ## Cài lên TV
-- Qua USB / adb: `adb connect <IP-TV>:5555` rồi `adb install app-release.apk`.
-- Hoặc chép APK vào USB, mở bằng trình quản lý file trên TV (cho phép "cài từ nguồn không rõ").
-- Đặt làm màn hình chính: nhấn HOME → chọn "GRAPE2Launcher" → Luôn dùng. Một số TV (Google TV/Sony) không cho đổi launcher mặc định; khi đó mở app từ danh sách ứng dụng.
-- Trong launcher: Cài đặt → **Cấp quyền hiển thị nhạc** → bật cho GRAPE2Launcher (để đọc bài đang phát và điều khiển Phát/Tiếp).
+- adb: `adb connect <IP-TV>:5555` rồi `adb install GRAPE2TV-Pro.apk`.
+- Hoặc chép APK vào USB, mở bằng trình quản lý file (cho phép "cài từ nguồn không rõ").
+- Đặt làm màn hình chính: nhấn HOME → chọn "GRAPE2TV Pro" → Luôn dùng. Một số TV (Google TV/Sony) không cho đổi launcher mặc định; khi đó mở từ danh sách ứng dụng.
 
-## Chỗ cần sửa nếu khác với bạn
-`web/src/App.tsx` (đầu file): `GRAPE_PKG` (gói app GRAPE2Play, mặc định com.grape.play) và `REPO` (kho GitHub kiểm tra cập nhật, mặc định PhungP/grape2launcher). Sau khi sửa: `cd web && npm run build`.
-`app/build.gradle.kts`: `applicationId`, `versionCode`, `versionName`. Khoá ký: giữ nguyên MỘT khoá cho mọi bản để cài đè được; file khoá không nằm trong git, hãy sao lưu riêng.
+## Cấp quyền hiển thị nhạc (Notification Access)
+Trong launcher: Cài đặt → Hệ thống → **Cấp quyền hiển thị nhạc** → bật cho GRAPE2TV Pro. Cần để đọc bài đang phát và điều khiển Phát/Tạm dừng/Tiếp/Trước. Thu hồi quyền → Music Center báo cần cấp quyền; cấp lại là tự cập nhật.
 
-## Ghi chú
-- Cài đặt → "Cỡ biểu tượng ứng dụng": Nhỏ / Vừa / Lớn.
-- Ô "Thư viện âm nhạc" mở GRAPE2Play kèm extra `grape_open=library` (app đích tự nhảy tới thư viện nếu hỗ trợ extra này).
-- Kho cập nhật: https://github.com/PhungP/grape2launcher (Releases, đính file .apk).
+## Điều khiển bằng remote
+D-pad di chuyển giữa ô; OK mở/chọn; Back đóng Cài đặt/thoát chế độ sắp xếp/thoát bảo vệ màn hình; Home về trạng thái đầu. Sắp xếp ứng dụng: Cài đặt → Giao diện → Sắp xếp ứng dụng, OK để nhấc, mũi tên để di chuyển.
 
-## Phiên bản & cập nhật online
-- Phiên bản hiện tại: **1.0.3**. `versionName` nằm trong `app/build.gradle.kts` (và `DEFAULT_VERSION` trong `web/src/App.tsx`); `versionCode` tự suy ra (1.0.3 → 10003).
-- Đưa lên GitHub: đẩy code, rồi `gh release create v1.0.3 <file.apk> --notes-file RELEASE_NOTES.md`, đính APK vào Release kèm nội dung `RELEASE_NOTES.md` (launcher hiển thị nội dung này ở mục Cập nhật).
-- Trên TV: Cài đặt → Cập nhật → Kiểm tra; chỉ báo có bản mới khi tag trên GitHub **lớn hơn** bản đang cài.
-- Bìa album thư viện: GRAPE2Play cần cung cấp ContentProvider `content://com.grape.play.library/albums` (cột `cover` = ảnh JPEG/PNG). Chưa có thì ô Thư viện dùng bìa của các bài đã phát.
+## Hiệu năng (v1.1.0)
+- Danh sách app, icon, bài đang phát, hàng đợi và trạng thái mạng được **giữ đệm** và chỉ tính lại khi hệ thống báo (`MediaController.Callback`, `NetworkCallback`, broadcast cài/gỡ gói); Kotlin đẩy sự kiện lên giao diện thay vì giao diện hỏi 2 lần/giây.
+- Launcher ẩn (đang ở app khác): dừng mọi bộ đếm/polling (`pauseTimers`), quay lại thì đồng bộ một lần.
+- Đồng hồ, thanh tiến độ, Wi-Fi tách riêng — không render lại cả màn hình; ô ứng dụng dùng `React.memo`.
+- CSS: bỏ `backdrop-filter` trên từng ô app, bỏ blob `filter: blur`, giảm blur panel, bỏ animation repaint. "Chuyển động nhẹ" tự bật mặc định trên thiết bị ≤2 GB RAM / ≤4 lõi.
 
-## Tích hợp với app GRAPE2Play
-Xem `GRAPE2Play_TichHop_Launcher.md` — những gì GRAPE2Play cần cung cấp (MediaSession, hàng đợi, bìa album, mở thẳng thư viện) để launcher hiển thị đủ thông tin.
+## Cài đặt cần chỉnh nếu khác
+`web/src/App.tsx` (đầu file): `GRAPE_PKG` (gói GRAPE2Play, mặc định com.grape.play), `REPO` (kho cập nhật: `PhungP/GRAPE2TV-Pro`). `app/build.gradle.kts`: `versionName` (versionCode tự suy ra: 1.1.0 → 10100).
+
+## Phát hành & cập nhật online
+- Kho: https://github.com/PhungP/GRAPE2TV-Pro (URL cũ `grape2launcher` được GitHub tự chuyển hướng).
+- Quy ước: tag `vX.Y.Z`, tiêu đề `GRAPE2TV Pro X.Y.Z`, file `GRAPE2TV-Pro.apk` (đổi tên file build thành tên này khi đính vào Release). Nội dung `RELEASE_NOTES.md` hiện ở mục Cập nhật.
+- `gh release create v1.1.0 GRAPE2TV-Pro.apk --title "GRAPE2TV Pro 1.1.0" --notes-file RELEASE_NOTES.md`
+- Trước khi phát hành: `apksigner verify --print-certs` phải cho cùng chứng chỉ với bản đang chạy trên TV.
+- Bìa album thư viện: GRAPE2Play cung cấp ContentProvider `content://com.grape.play.library/albums` (cột `cover`). Chưa có thì dùng bìa các bài đã phát.
+
+## Tích hợp GRAPE2Play
+Xem `GRAPE2Play_TichHop_Launcher.md`.

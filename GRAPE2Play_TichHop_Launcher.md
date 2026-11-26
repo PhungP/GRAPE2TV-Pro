@@ -1,4 +1,4 @@
-# GRAPE2Play ⇄ GRAPE2Launcher — những gì app cần cung cấp
+# GRAPE2Play ⇄ GRAPE2TV Pro — những gì app cần cung cấp
 
 Launcher **không đọc dữ liệu riêng của GRAPE2Play**. Nó chỉ dùng các kênh chuẩn của Android, nên GRAPE2Play phải "công khai" thông tin qua các kênh dưới đây. Mình chưa xem được mã nguồn GRAPE2Play (chưa có trong cuộc trò chuyện này), nên đây là bản đặc tả để bạn lập trình lại; sau khi làm, dùng **Cài đặt → Hệ thống → Kiểm tra nhạc** trên launcher để biết app đã cung cấp đủ chưa.
 

@@ -33,7 +33,7 @@ class MainActivity : android.app.Activity() {
 
         bridge = LauncherBridge(this)
         webView = WebView(this).apply {
-            setBackgroundColor(Color.parseColor("#0A0D1D"))
+            setBackgroundColor(Color.parseColor("#101014"))
             isFocusable = true
             isFocusableInTouchMode = true
             settings.javaScriptEnabled = true
@@ -63,12 +63,20 @@ class MainActivity : android.app.Activity() {
 
     override fun onResume() {
         super.onResume()
+        bridge.onResume()
         webView.onResume()
+        webView.resumeTimers()
+        // báo JS: đang hiển thị → đồng bộ lại ứng dụng/nhạc/mạng rồi chạy lại các bộ đếm
+        webView.evaluateJavascript("window.__setActive && window.__setActive(true)", null)
         webView.requestFocus()
     }
 
     override fun onPause() {
+        // ẩn launcher: dừng đẩy sự kiện, dừng bộ đếm JS (đồng hồ, tiến độ, polling) để không tốn CPU khi đang ở app khác
+        bridge.onPause()
+        webView.evaluateJavascript("window.__setActive && window.__setActive(false)", null)
         webView.onPause()
+        webView.pauseTimers()
         super.onPause()
     }
 

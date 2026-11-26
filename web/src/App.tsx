@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Settings as SettingsIcon, Play, Pause, SkipForward, SkipBack, Clock3, Sparkles, ChevronRight, X, Grape, Cloud, Droplets, Wind, Download, RefreshCw, CheckCircle2, Info, ShieldCheck, Loader2, Library } from "lucide-react";
 import "./index.css";
 
@@ -66,15 +66,97 @@ const ICON_SIZES: Record<IconSize, { label: string; cols: number; icon: number; 
 type UpdateState = "idle" | "checking" | "available" | "downloading" | "ready" | "latest" | "error";
 type AppItem = { name: string; short: string; bg: string; note: string; pkg?: string; icon?: string };
 type QItem = { title: string; artist: string };
-type Session = { title?: string; artist?: string; album?: string; queue?: QItem[]; playing?: boolean; position?: number; duration?: number; pkg?: string; needAccess?: boolean } | null;
+type Session = { title?: string; artist?: string; album?: string; queue?: QItem[]; playing?: boolean; duration?: number; pkg?: string; needAccess?: boolean } | null;
+type Progress = { position: number; duration: number; playing: boolean };
 
 // ===== Cầu nối với Android (MainActivity.kt). Chạy trên trình duyệt thì Android = undefined → dùng dữ liệu mẫu =====
 type AndroidBridge = {
-  getApps(): string; launch(pkg: string): boolean; launchWith(pkg: string, extra: string): boolean; getArt(): string; getNowPlaying(): string; media(action: string): void;
+  getApps(): string; launch(pkg: string): boolean; launchWith(pkg: string, extra: string): boolean; getArt(): string; getNowPlaying(): string; getProgress(): string; media(action: string): void;
   openNotificationAccess(): void; openSystemSettings(): void; openWifiSettings(): void; getNetwork(): string; getLibraryCovers(): string; debugSessions(): string; fetchText(url: string, id: string): void; getInfo(): string;
   downloadAndInstall(url: string): void; getDownloadProgress(): number;
 };
-declare global { interface Window { Android?: AndroidBridge; __onBack?: () => boolean; __cb?: (id: string, text: string) => void } }
+declare global { interface Window { Android?: AndroidBridge; __onBack?: () => boolean; __cb?: (id: string, text: string) => void; __setActive?: (a: boolean) => void; __mediaChanged?: () => void; __netChanged?: () => void; __appsChanged?: () => void } }
+
+// ===== Launcher đang hiển thị hay đang ẩn (Android gọi __setActive khi onResume/onPause) =====
+// Khi ẩn: mọi bộ đếm dừng, không polling. Khi hiện lại: mỗi bộ đếm tự đồng bộ ngay một lần.
+let activeNow = typeof document === "undefined" ? true : document.visibilityState !== "hidden";
+const activeSubs = new Set<(a: boolean) => void>();
+const setActiveNow = (a: boolean) => { if (a === activeNow) return; activeNow = a; activeSubs.forEach((f) => f(a)); };
+window.__setActive = setActiveNow;
+document.addEventListener("visibilitychange", () => setActiveNow(document.visibilityState !== "hidden"));
+/** Chạy fn ngay rồi lặp mỗi `ms` mili-giây, chỉ khi launcher hiển thị; hiện lại thì chạy ngay. ms=0: không lặp (chỉ chạy lúc hiện lại). */
+function useActiveTick(fn: () => void, ms: number, on = true) {
+  const ref = useRef(fn); ref.current = fn;
+  useEffect(() => {
+    if (!on) return;
+    let t: number | undefined;
+    const start = () => { ref.current(); if (ms > 0) t = window.setInterval(() => ref.current(), ms); };
+    const stop = () => { if (t !== undefined) { window.clearInterval(t); t = undefined; } };
+    if (activeNow) start();
+    const sub = (a: boolean) => { stop(); if (a) start(); };
+    activeSubs.add(sub);
+    return () => { stop(); activeSubs.delete(sub); };
+  }, [ms, on]);
+}
+/** Đăng ký hàm Android gọi khi có thay đổi (window.__mediaChanged ...). */
+function useNativeEvent(name: "__mediaChanged" | "__netChanged" | "__appsChanged", fn: () => void) {
+  const ref = useRef(fn); ref.current = fn;
+  useEffect(() => { window[name] = () => ref.current(); return () => { window[name] = undefined; }; }, [name]);
+}
+// Đồng hồ: chỉ component dùng nó render lại (mỗi phút đổi chữ), không kéo cả App render theo
+const DAYS = ["Chủ Nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
+const clockText = (d: Date, c24: boolean) => { const h = d.getHours(); const hh = c24 ? h : h % 12 || 12; return `${String(hh).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}${c24 ? "" : h >= 12 ? " CH" : " SA"}`; };
+const dateText = (d: Date) => `${DAYS[d.getDay()]}, ${d.getDate()}/${d.getMonth() + 1}`;
+function useClock(clock24: boolean) {
+  const [v, setV] = useState(() => { const d = new Date(); return { clock: clockText(d, clock24), date: dateText(d) }; });
+  useActiveTick(() => { const d = new Date(); const clock = clockText(d, clock24), date = dateText(d); setV((o) => (o.clock === clock && o.date === date ? o : { clock, date })); }, 1000);
+  useEffect(() => { const d = new Date(); setV({ clock: clockText(d, clock24), date: dateText(d) }); }, [clock24]);
+  return v;
+}
+const ClockBlock = React.memo(function ClockBlock({ clock24, rad }: { clock24: boolean; rad: number }) {
+  const { clock, date } = useClock(clock24);
+  return (
+    <div className="flex items-center gap-3">
+      <span className="grid h-12 w-12 shrink-0 place-items-center accent-bg" style={{ borderRadius: rad }}><Grape size={24} /></span>
+      <div className="leading-none">
+        <p className="text-[clamp(1.65rem,5vw,2.4rem)] font-extrabold leading-none tabular-nums tracking-tight">{clock}</p>
+        <p className="mt-1.5 flex items-center gap-1.5 text-[12px] font-medium text-[var(--muted)]"><Clock3 size={13} className="accent-text shrink-0" /><span>{date}</span></p>
+      </div>
+    </div>
+  );
+});
+const SaverClock = React.memo(function SaverClock({ clock24, nowPlaying }: { clock24: boolean; nowPlaying: string }) {
+  const { clock, date } = useClock(clock24);
+  return (<>
+    <p className="text-[clamp(3rem,14vw,7rem)] font-extrabold leading-none tabular-nums tracking-tight">{clock}</p>
+    <p className="mt-2 text-lg text-white/70">{date}</p>
+    {nowPlaying && <p className="mt-3 text-sm accent-text">♪ {nowPlaying}</p>}
+  </>);
+});
+// Thanh tiến độ bài hát: tự đọc vị trí từ bản đệm Android mỗi giây (chỉ khi đang phát và launcher hiển thị) — không render lại App
+const ProgressBar = React.memo(function ProgressBar({ hasBridge, playing, title, simElapsed, simTotal }: { hasBridge: boolean; playing: boolean; title: string; simElapsed: number; simTotal: number }) {
+  const [p, setP] = useState<Progress>({ position: 0, duration: 0, playing: false });
+  const read = useCallback(() => {
+    const b = bridge(); if (!b) return;
+    const n = safeJson<Progress>(b.getProgress(), { position: 0, duration: 0, playing: false });
+    const q = { position: Math.floor(n.position / 1000) * 1000, duration: n.duration, playing: n.playing };
+    setP((o) => (o.position === q.position && o.duration === q.duration && o.playing === q.playing ? o : q));
+  }, []);
+  useActiveTick(read, 1000, hasBridge && playing);              // đang phát: mỗi giây
+  useEffect(() => { if (hasBridge && !playing) read(); }, [hasBridge, playing, title, read]); // tạm dừng/đổi bài: đọc một lần
+  const elapsed = hasBridge ? Math.floor(p.position / 1000) : simElapsed;
+  const total = hasBridge ? Math.floor(p.duration / 1000) : simTotal;
+  const progress = total > 0 ? Math.min(100, (elapsed / total) * 100) : 0;
+  return (
+    <div className="mt-3 flex items-center gap-2">
+      <span className="w-10 text-[11px] tabular-nums text-[var(--muted-2)]">{fmt(elapsed)}</span>
+      <div className="h-[5px] flex-1 overflow-hidden rounded-full bg-black/30" role="progressbar" aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100} aria-label="Tiến độ bài hát">
+        <div className="progress-fill h-full rounded-full accent-bg" style={{ width: `${progress}%` }} />
+      </div>
+      <span className="w-10 text-right text-[11px] tabular-nums text-[var(--muted-2)]">{total > 0 ? fmt(total) : "--:--"}</span>
+    </div>
+  );
+});
 // Gọi mạng qua Android (tránh giới hạn CORS của WebView); chỉ các máy chủ trong danh sách cho phép ở phía Android
 const pendingCb: Record<string, (t: string) => void> = {};
 window.__cb = (id, t) => { pendingCb[id]?.(t); delete pendingCb[id]; };
@@ -89,11 +171,13 @@ const nativeFetch = (url: string) => new Promise<string>((resolve) => {
 const bridge = (): AndroidBridge | undefined => window.Android;
 const safeJson = <T,>(raw: string | undefined, fallback: T): T => { try { return raw ? JSON.parse(raw) as T : fallback; } catch { return fallback; } };
 const PALETTE = ["#c01a22", "#d92b20", "#f26b16", "#e83e8c", "#18a84f", "#3e6be0", "#7a4bd6", "#0f9aa8", "#b7744a", "#8c8f94"];
+// Thiết bị yếu (RAM ≤ 2 GB hoặc ≤ 4 lõi): mặc định bật "Chuyển động nhẹ" — người dùng vẫn đổi được trong Cài đặt
+const lowEnd = (() => { const n = navigator as Navigator & { deviceMemory?: number }; return (n.deviceMemory !== undefined && n.deviceMemory <= 2) || (n.hardwareConcurrency !== undefined && n.hardwareConcurrency <= 4); })();
 const GRAPE_PKG = "com.grape.play"; // gói của ứng dụng GRAPE2Play đầy đủ — sửa nếu khác
 const SETTINGS_KEY = "grape-launcher-settings";
 
-const DEFAULT_VERSION = "v1.0.3";
-const REPO = "PhungP/grape2launcher"; // https://github.com/PhungP/grape2launcher — kho GitHub Releases dùng để kiểm tra cập nhật
+const DEFAULT_VERSION = "v1.1.0";
+const REPO = "PhungP/GRAPE2TV-Pro"; // https://github.com/PhungP/GRAPE2TV-Pro — kho GitHub Releases dùng để kiểm tra cập nhật (URL cũ grape2launcher vẫn được GitHub chuyển hướng)
 
 const albums: Album[] = [
   { title: "Đêm Hổ Phách", detail: "Tuyển tập đêm • GRAPE2Play", minutes: "42 phút", hue: "linear-gradient(135deg,#ff9d1e,#7a2b08)", mark: "ĐH" },
@@ -128,9 +212,26 @@ function fmt(total: number) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+// Ô ứng dụng: React.memo để đổi focus chỉ render lại 2 ô (ô cũ/ô mới) thay vì cả lưới
+type TileProps = { app: AppItem; i: number; sz: { icon: number; font: number }; active: boolean; focused: boolean; lifted: boolean; xperia: boolean; onOpen: (i: number) => void; onFocusTile: (i: number) => void; setRef: (i: number, el: HTMLButtonElement | null) => void };
+const AppTile = React.memo(function AppTile({ app, i, sz, active, focused, lifted, xperia, onOpen, onFocusTile, setRef }: TileProps) {
+  const r = xperia ? 4 : sz.icon / 4.5;
+  return (
+    <button ref={(el) => setRef(i, el)} onClick={() => onOpen(i)} onFocus={() => onFocusTile(i)}
+      className={`t-card t-focus group flex flex-col items-center justify-center px-2 py-3 text-center ${active ? "border-[var(--accent-line)] accent-soft" : ""} ${focused ? "t-focused" : ""}`}
+      style={lifted ? { transform: "scale(1.06)", borderColor: "var(--accent)", boxShadow: "0 0 0 2px var(--accent), 0 18px 40px rgba(0,0,0,.5)" } : undefined}>
+      <span className="grid place-items-center overflow-hidden font-black" style={{ width: sz.icon, height: sz.icon, fontSize: sz.icon / 3, background: app.icon ? "transparent" : app.bg, color: app.name === "TIDAL" || app.name === "GRAPE2Play" ? "#211505" : "#fff", borderRadius: r }}>
+        {app.icon ? <img src={`data:image/png;base64,${app.icon}`} alt="" decoding="async" className="h-full w-full object-contain" /> : app.short}
+      </span>
+      <span className="mt-2.5 block w-full truncate font-semibold" style={{ fontSize: sz.font }}>{app.name}</span>
+      {app.note && <span className="block w-full truncate text-[11px] text-[var(--muted)]">{app.note}</span>}
+      {active && <span className="mt-1.5 block h-1 w-6 rounded-full accent-bg" />}
+    </button>
+  );
+});
+
 export default function App() {
   const hasBridge = !!bridge();
-  const [now, setNow] = useState(new Date());
   const [current, setCurrent] = useState(0);
   const [simPlaying, setSimPlaying] = useState(true);
   const [simElapsed, setSimElapsed] = useState(38);
@@ -164,7 +265,7 @@ export default function App() {
   const orderRef = useRef<string[]>(readJson(ORDER_KEY, []));
   const arrangeRef = useRef(false);
   const [clock24, setClock24] = useState(true);
-  const [softMotion, setSoftMotion] = useState(false);
+  const [softMotion, setSoftMotion] = useState(lowEnd);
   const [saveState, setSaveState] = useState("");
   const [weather, setWeather] = useState<Weather>(defaultWeather);
   const [session, setSession] = useState<Session>(null);
@@ -198,12 +299,6 @@ export default function App() {
   useEffect(() => { settingsOpenRef.current = settingsOpen; }, [settingsOpen]);
   useEffect(() => { arrangeRef.current = arrange; }, [arrange]);
 
-  // Đồng hồ
-  useEffect(() => {
-    const t = window.setInterval(() => setNow(new Date()), 1000);
-    return () => window.clearInterval(t);
-  }, []);
-
   // Cài đặt lưu cục bộ (localStorage) — không cần mạng
   useEffect(() => {
     try {
@@ -234,10 +329,14 @@ export default function App() {
   }, []);
 
   // Danh sách ứng dụng thật trên TV (cập nhật khi quay lại launcher)
+  const lastAppsRaw = useRef("");
   const loadApps = useCallback(() => {
     const b = bridge();
     if (!b) return;
-    const list = safeJson<Array<{ name: string; pkg: string; icon?: string }>>(b.getApps(), []);
+    const raw = b.getApps();
+    if (raw === lastAppsRaw.current) return;   // danh sách không đổi: không dựng lại giao diện
+    lastAppsRaw.current = raw;
+    const list = safeJson<Array<{ name: string; pkg: string; icon?: string }>>(raw, []);
     const mapped: AppItem[] = list.map((a, i) => ({
       name: a.name, pkg: a.pkg, icon: a.icon, short: (a.name[0] || "?").toUpperCase(), bg: PALETTE[i % PALETTE.length],
       note: "",
@@ -252,13 +351,8 @@ export default function App() {
     }
     setApps(mapped);
   }, []);
-  useEffect(() => {
-    loadApps();
-    const onVis = () => { if (document.visibilityState === "visible") loadApps(); };
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("focus", loadApps);
-    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", loadApps); };
-  }, [loadApps]);
+  useActiveTick(loadApps, 0);              // lần đầu + mỗi lần launcher hiện lại (bản đệm Android nên rất rẻ)
+  useNativeEvent("__appsChanged", loadApps); // cài/gỡ/cập nhật app → Android báo lên
   const firstFocus = useRef(true);
   useEffect(() => {
     if (apps.length && firstFocus.current) { firstFocus.current = false; window.setTimeout(() => appRefs.current[0]?.focus({ preventScroll: true }), 150); }
@@ -267,38 +361,48 @@ export default function App() {
   // Thời tiết Hải Phòng (Open-Meteo, không cần khóa API)
   useEffect(() => {
     let off = false;
+    let last = 0;
     const load = async () => {
+      if (!activeNow || Date.now() - last < 19 * 60 * 1000) return; // không tải khi launcher ẩn; chỉ làm mới sau ~20 phút
+      last = Date.now();
+      const ac = new AbortController(); const to = window.setTimeout(() => ac.abort(), 10000);
       try {
-        const r = await fetch("https://api.open-meteo.com/v1/forecast?latitude=20.8449&longitude=106.6881&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&timezone=Asia%2FBangkok");
+        const r = await fetch("https://api.open-meteo.com/v1/forecast?latitude=20.8449&longitude=106.6881&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&timezone=Asia%2FBangkok", { signal: ac.signal });
         const j = await r.json();
         const c = j.current;
         if (!off && c) setWeather({ city: "Hải Phòng", temp: Math.round(c.temperature_2m), condition: wmo(c.weather_code), humidity: Math.round(c.relative_humidity_2m), wind: Math.round(c.wind_speed_10m) });
-      } catch { /* ngoại tuyến: giữ giá trị cũ */ }
+      } catch { last = 0; /* ngoại tuyến/hết giờ: giữ giá trị cũ, thử lại lần sau */ }
+      finally { window.clearTimeout(to); }
     };
     load();
     const t = window.setInterval(load, 20 * 60 * 1000);
-    return () => { off = true; window.clearInterval(t); };
+    const sub = (a: boolean) => { if (a) load(); };
+    activeSubs.add(sub);
+    return () => { off = true; window.clearInterval(t); activeSubs.delete(sub); };
   }, []);
 
   // Nhạc đang phát thật (MediaSession) — cần cấp "Quyền truy cập thông báo" cho launcher
-  useEffect(() => {
-    const b = bridge();
-    if (!b) return;
-    const poll = () => setSession(safeJson<Session>(b.getNowPlaying(), null));
-    poll();
-    const t = window.setInterval(poll, 500);
-    return () => window.clearInterval(t);
+  // Android đẩy sự kiện (__mediaChanged) mỗi khi bài/trạng thái đổi; vòng hỏi 10 giây chỉ là dự phòng. Chỉ cập nhật khi nội dung thật sự đổi.
+  const lastSession = useRef("");
+  const pollSession = useCallback(() => {
+    const b = bridge(); if (!b) return;
+    const raw = b.getNowPlaying();
+    if (raw === lastSession.current) return;
+    lastSession.current = raw;
+    setSession(safeJson<Session>(raw, null));
   }, []);
+  useActiveTick(pollSession, 10000, hasBridge);
+  useNativeEvent("__mediaChanged", pollSession);
 
   // Trạng thái mạng (biểu tượng Wi-Fi)
-  useEffect(() => {
-    const b = bridge();
-    if (!b) return;
-    const poll = () => setNet(safeJson<Net>(b.getNetwork(), { type: "none", level: 0 }));
-    poll();
-    const t = window.setInterval(poll, 5000);
-    return () => window.clearInterval(t);
+  // Android báo __netChanged khi mạng đổi; vòng hỏi 30 giây chỉ là dự phòng (Android 5–6 không có callback)
+  const pollNet = useCallback(() => {
+    const b = bridge(); if (!b) return;
+    const n = safeJson<Net>(b.getNetwork(), { type: "none", level: 0 });
+    setNet((o) => (o.type === n.type && o.level === n.level ? o : n));
   }, []);
+  useActiveTick(pollNet, 30000, hasBridge);
+  useNativeEvent("__netChanged", pollNet);
 
   // Bìa album trong thư viện GRAPE2Play (nếu app cung cấp ContentProvider), tải lại khi quay về launcher
   const loadCovers = useCallback(() => {
@@ -307,12 +411,7 @@ export default function App() {
     const list = safeJson<string[]>(b.getLibraryCovers(), []);
     setProviderCovers(list.filter(Boolean).map((x) => `data:image/jpeg;base64,${x}`));
   }, []);
-  useEffect(() => {
-    loadCovers();
-    const onVis = () => { if (document.visibilityState === "visible") loadCovers(); };
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, [loadCovers]);
+  useActiveTick(loadCovers, 0, hasBridge);
 
   // Ảnh bìa của bài đang phát (chỉ tải lại khi đổi bài)
   const artKey = `${session?.pkg || ""}|${session?.title || ""}`;
@@ -365,9 +464,9 @@ export default function App() {
     const evs = ["keydown", "mousedown", "touchstart", "mousemove"];
     evs.forEach((n) => window.addEventListener(n, act, true));
     const t = window.setInterval(() => {
-      if (saverMin > 0 && !saverRef.current && Date.now() - lastAct.current > saverMin * 60000) setSaverOn(true);
+      if (activeNow && saverMin > 0 && !saverRef.current && Date.now() - lastAct.current > saverMin * 60000) setSaverOn(true);
     }, 5000);
-    const mv = window.setInterval(() => { if (saverRef.current) setSaverPos({ x: 30 + Math.random() * 40, y: 35 + Math.random() * 30 }); }, 20000);
+    const mv = window.setInterval(() => { if (activeNow && saverRef.current) setSaverPos({ x: 30 + Math.random() * 40, y: 35 + Math.random() * 30 }); }, 20000);
     return () => { evs.forEach((n) => window.removeEventListener(n, act, true)); window.clearInterval(t); window.clearInterval(mv); };
   }, [saverMin]);
 
@@ -447,17 +546,6 @@ export default function App() {
   };
   const changeTheme = (t: Theme) => { changeSetting({ theme: t }); showToast(t === "liquid" ? "Đã chuyển sang Liquid Glass." : "Đã chuyển sang Xperia."); };
 
-  const clock = useMemo(() => {
-    const h = now.getHours();
-    const hh = clock24 ? h : h % 12 || 12;
-    return `${String(hh).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}${clock24 ? "" : h >= 12 ? " CH" : " SA"}`;
-  }, [now, clock24]);
-
-  const dateLabel = useMemo(() => {
-    const days = ["Chủ Nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
-    return `${days[now.getDay()]}, ${now.getDate()}/${now.getMonth() + 1}`;
-  }, [now]);
-
   const openGrape = () => {
     const b = bridge();
     if (!b) { showToast("Đang mở GRAPE2Play — trình phát đầy đủ…"); return; }
@@ -496,6 +584,10 @@ export default function App() {
     if (!b) { showToast(`Đang mở ${a.name}…`); return; }
     if (a.pkg && !b.launch(a.pkg)) showToast(`Không mở được ${a.name}.`);
   };
+  const openRef = useRef(openApp); openRef.current = openApp;
+  const stableOpen = useCallback((i: number) => openRef.current(i), []);
+  const stableFocus = useCallback((i: number) => setFocusedApp(i), []);
+  const setAppRef = useCallback((i: number, el: HTMLButtonElement | null) => { appRefs.current[i] = el; }, []);
   const playAlbum = (i: number) => { setCurrent(i); setSimElapsed(4); setSimPlaying(true); showToast(`Đang phát “${albums[i].title}”`); };
   const next = () => {
     const b = bridge();
@@ -514,7 +606,7 @@ export default function App() {
   const togglePlay = () => {
     const b = bridge();
     if (b) {
-      if (session?.needAccess) { b.openNotificationAccess(); showToast("Bật “Quyền truy cập thông báo” cho GRAPE2Launcher để điều khiển nhạc."); return; }
+      if (session?.needAccess) { b.openNotificationAccess(); showToast("Bật “Quyền truy cập thông báo” cho GRAPE2TV Pro để điều khiển nhạc."); return; }
       if (!session?.title) { openGrape(); return; }
       b.media("playpause"); return;
     }
@@ -582,12 +674,9 @@ export default function App() {
   // Giá trị hiển thị cho dải "Đang phát"
   const demo = albums[current];
   const album = hasBridge
-    ? { title: session?.title || "Chưa có nhạc đang phát", detail: session?.title ? ([session.artist, session.album].filter(Boolean).join(" · ") || session.pkg || "") : (session?.needAccess ? "Bấm ▶ để cấp quyền điều khiển nhạc" : "Mở GRAPE2Play để bắt đầu"), hue: "linear-gradient(135deg,#ff9d1e,#7a2b08)", mark: (session?.title?.[0] || "♪").toUpperCase() }
+    ? { title: session?.title || "Chưa có nhạc đang phát", detail: session?.title ? ([session.artist, session.album].filter(Boolean).join(" · ") || session.pkg || "") : (session?.needAccess ? "Bấm ▶ để cấp quyền điều khiển nhạc" : "Mở GRAPE2Play để bắt đầu"), hue: "linear-gradient(135deg,#7545c8,#1a1028)", mark: (session?.title?.[0] || "♪").toUpperCase() }
     : demo;
   const playing = hasBridge ? !!session?.playing : simPlaying;
-  const elapsed = hasBridge ? Math.floor((session?.position ?? 0) / 1000) : simElapsed;
-  const total = hasBridge ? Math.floor((session?.duration ?? 0) / 1000) : simTotal;
-  const progress = total > 0 ? Math.min(100, (elapsed / total) * 100) : 0;
   const isXperia = theme === "xperia";
   const grapeIcon = apps.find((a) => a.pkg === GRAPE_PKG)?.icon;
   const sz = ICON_SIZES[iconSize];
@@ -614,13 +703,7 @@ export default function App() {
           {/* ĐỒNG HỒ + THỜI TIẾT (trái) — Wi-Fi + CÀI ĐẶT (góc phải) */}
           <header className="flex items-start justify-between gap-4">
             <div className="flex min-w-0 items-center gap-5">
-              <div className="flex items-center gap-3">
-                <span className="grid h-12 w-12 shrink-0 place-items-center accent-bg" style={{ borderRadius: rad(999) }}><Grape size={24} /></span>
-                <div className="leading-none">
-                  <p className="text-[clamp(1.65rem,5vw,2.4rem)] font-extrabold leading-none tabular-nums tracking-tight">{clock}</p>
-                  <p className="mt-1.5 flex items-center gap-1.5 text-[12px] font-medium text-[var(--muted)]"><Clock3 size={13} className="accent-text shrink-0" /><span>{dateLabel}</span></p>
-                </div>
-              </div>
+              <ClockBlock clock24={clock24} rad={rad(999)} />
               <section aria-label="Thời tiết Hải Phòng" className="t-panel flex items-center gap-3 px-3 py-2">
                 <span className="grid h-9 w-9 shrink-0 place-items-center accent-soft" style={{ borderRadius: rad(999) }}><Cloud size={20} className="accent-text" /></span>
                 <div className="leading-none">
@@ -682,21 +765,15 @@ export default function App() {
                   {vuOn && (
                     <div aria-hidden="true" className={`flex h-8 shrink-0 items-end gap-[3px] ${playing ? "" : "vu-paused"}`}>
                       {vuBars.map((h, i) => (
-                        <span key={i} className="vu-bar w-[3px] rounded-full bg-gradient-to-t from-[var(--accent-2)] to-[#ffe08a]" style={{ height: `${Math.round(h * 100)}%`, animationDelay: `${i * 0.09}s`, animationDuration: `${0.6 + (i % 4) * 0.14}s` }} />
+                        <span key={i} className="vu-bar w-[3px] rounded-full bg-gradient-to-t from-[var(--accent-2)] to-[var(--accent)]" style={{ height: `${Math.round(h * 100)}%`, animationDelay: `${i * 0.09}s`, animationDuration: `${0.6 + (i % 4) * 0.14}s` }} />
                       ))}
                     </div>
                   )}
                 </div>
-                <div className="mt-3 flex items-center gap-2">
-                  <span className="w-10 text-[11px] tabular-nums text-[var(--muted-2)]">{fmt(elapsed)}</span>
-                  <div className="h-[5px] flex-1 overflow-hidden rounded-full bg-black/30" role="progressbar" aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100} aria-label="Tiến độ bài hát">
-                    <div className={playing ? "progress-shimmer h-full rounded-full" : "h-full rounded-full accent-bg"} style={{ width: `${progress}%` }} />
-                  </div>
-                  <span className="w-10 text-right text-[11px] tabular-nums text-[var(--muted-2)]">{total > 0 ? fmt(total) : "--:--"}</span>
-                </div>
+                <ProgressBar hasBridge={hasBridge} playing={playing} title={session?.title || ""} simElapsed={simElapsed} simTotal={simTotal} />
                 <div className="mt-3 flex items-center justify-center gap-3">
                   <button onClick={prev} aria-label="Bài trước" title="Bài trước" className="t-btn t-focus grid h-10 w-10 place-items-center border border-[rgba(255,255,255,.28)] bg-black/20 text-white hover:bg-black/35" style={{ borderRadius: rad(999) }}><SkipBack size={17} /></button>
-                  <button ref={playRef} onClick={togglePlay} aria-label={playing ? "Tạm dừng" : "Phát"} className="t-btn t-focus grid h-11 w-11 place-items-center accent-bg shadow-[0_8px_22px_rgba(255,140,20,.35)] hover:opacity-90" style={{ borderRadius: rad(999) }}>
+                  <button ref={playRef} onClick={togglePlay} aria-label={playing ? "Tạm dừng" : "Phát"} className="t-btn t-focus grid h-11 w-11 place-items-center accent-bg shadow-[0_8px_22px_rgba(117,69,200,.45)] hover:opacity-90" style={{ borderRadius: rad(999) }}>
                     {playing ? <Pause size={19} fill="currentColor" /> : <Play size={19} fill="currentColor" className="ml-0.5" />}
                   </button>
                   <button onClick={next} aria-label="Bài tiếp theo" title="Bài tiếp theo" className="t-btn t-focus grid h-10 w-10 place-items-center border border-[rgba(255,255,255,.28)] bg-black/20 text-white hover:bg-black/35" style={{ borderRadius: rad(999) }}><SkipForward size={17} /></button>
@@ -729,23 +806,10 @@ export default function App() {
             </div>
             {hasBridge && apps.length === 0 && <p className="text-xs text-[var(--muted)]">Đang tải danh sách ứng dụng…</p>}
             <div ref={gridRef} data-grid="apps" className="grid gap-3" style={{ gridTemplateColumns: `repeat(${sz.cols}, minmax(0, 1fr))` }}>
-              {apps.map((app, i) => {
-                const active = selectedApp === i && !arrange;
-                const focused = focusedApp === i;
-                const lifted = arrange && picked && focused;
-                return (
-                  <button key={app.pkg || app.name} ref={(el) => { appRefs.current[i] = el; }} onClick={() => openApp(i)} onFocus={() => setFocusedApp(i)}
-                    className={`t-card t-focus group flex flex-col items-center justify-center px-2 py-3 text-center ${active ? "border-[var(--accent-line)] accent-soft" : ""} ${focused ? "t-focused" : ""}`}
-                    style={lifted ? { transform: "scale(1.06)", borderColor: "var(--accent)", boxShadow: "0 0 0 2px var(--accent), 0 18px 40px rgba(0,0,0,.5)" } : undefined}>
-                    <span className="grid place-items-center overflow-hidden font-black" style={{ width: sz.icon, height: sz.icon, fontSize: sz.icon / 3, background: app.icon ? "transparent" : app.bg, color: app.name === "TIDAL" || app.name === "GRAPE2Play" ? "#211505" : "#fff", borderRadius: rad(sz.icon / 4.5) }}>
-                      {app.icon ? <img src={`data:image/png;base64,${app.icon}`} alt="" className="h-full w-full object-contain" /> : app.short}
-                    </span>
-                    <span className="mt-2.5 block w-full truncate font-semibold" style={{ fontSize: sz.font }}>{app.name}</span>
-                    {app.note && <span className="block w-full truncate text-[11px] text-[var(--muted)]">{app.note}</span>}
-                    {active && <span className="mt-1.5 block h-1 w-6 rounded-full accent-bg" />}
-                  </button>
-                );
-              })}
+              {apps.map((app, i) => (
+                <AppTile key={app.pkg || app.name} app={app} i={i} sz={sz} xperia={isXperia} active={selectedApp === i && !arrange} focused={focusedApp === i}
+                  lifted={arrange && picked && focusedApp === i} onOpen={stableOpen} onFocusTile={stableFocus} setRef={setAppRef} />
+              ))}
             </div>
           </section>
 
@@ -768,14 +832,14 @@ export default function App() {
           )}
 
           <footer className="mt-6 flex flex-col items-center gap-1 border-t hairline-x pt-3 text-center sm:flex-row sm:justify-between sm:text-left">
-            <p className="text-[11px] text-[var(--muted)]">GRAPE2Launcher • {CURRENT_VERSION} • Nhẹ • Nhanh • Đủ dùng</p>
-            <p className="text-[12px] italic font-semibold gold-text">Limited Edition — GRAPE2Launcher</p>
+            <p className="text-[11px] text-[var(--muted)]">GRAPE2TV Pro • {CURRENT_VERSION} • Nhẹ • Mượt • Nhanh</p>
+            <p className="text-[12px] italic font-semibold gold-text">Hi-Fi ecosystem — GRAPE2</p>
           </footer>
         </main>
       </div>
 
       {toast && (
-        <div role="status" className="toast-in fixed bottom-5 left-1/2 z-50 flex w-[calc(100%-2rem)] max-w-md -translate-x-1/2 items-center gap-2 rounded-2xl border border-[var(--accent-line)] bg-[#241a10] px-4 py-3 shadow-2xl">
+        <div role="status" className="toast-in fixed bottom-5 left-1/2 z-50 flex w-[calc(100%-2rem)] max-w-md -translate-x-1/2 items-center gap-2 rounded-2xl border border-[var(--accent-line)] bg-[#1a1624] px-4 py-3 shadow-2xl">
           <Sparkles size={16} className="shrink-0 accent-text" />
           <p className="min-w-0 flex-1 text-[13px] font-medium [overflow-wrap:anywhere]">{toast}</p>
           <button onClick={() => setToast("")} aria-label="Đóng thông báo" className="shrink-0 text-[var(--muted)] hover:text-white"><X size={16} /></button>
@@ -786,22 +850,20 @@ export default function App() {
         <div className="fixed inset-0 z-[70] overflow-hidden bg-black" aria-hidden="true">
           {saverStyle === "wall" && wallUrl && <div className="absolute inset-0 bg-cover bg-center opacity-45" style={{ backgroundImage: `url(${wallUrl})` }} />}
           <div className="absolute text-center" style={{ left: `${saverPos.x}%`, top: `${saverPos.y}%`, transform: "translate(-50%,-50%)", transition: softMotion ? "none" : "left 2s ease, top 2s ease" }}>
-            <p className="text-[clamp(3rem,14vw,7rem)] font-extrabold leading-none tabular-nums tracking-tight">{clock}</p>
-            <p className="mt-2 text-lg text-white/70">{dateLabel}</p>
-            {hasBridge && playing && session?.title && <p className="mt-3 text-sm accent-text">♪ {album.title}</p>}
+            <SaverClock clock24={clock24} nowPlaying={hasBridge && playing && session?.title ? album.title : ""} />
           </div>
         </div>
       )}
 
       {settingsOpen && (
-        <div className="fixed inset-0 z-50 bg-black/50" role="dialog" aria-modal="true" aria-label="Cài đặt GRAPE2Launcher" onKeyDown={onDialogKeys}>
+        <div className="fixed inset-0 z-50 bg-black/50" role="dialog" aria-modal="true" aria-label="Cài đặt GRAPE2TV Pro" onKeyDown={onDialogKeys}>
           <div className="flex h-full items-start justify-end p-[2vh]">
             <div ref={dialogRef} className="t-panel flex max-h-[96vh] w-[30vw] min-w-[280px] max-w-[330px] flex-col overflow-hidden p-3 shadow-2xl" style={{ background: isXperia ? "#111" : undefined }}>
               {/* Đầu cửa sổ */}
               <div className="flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="grid h-8 w-8 shrink-0 place-items-center accent-bg" style={{ borderRadius: rad(999) }}><Grape size={16} /></span>
-                  <div className="min-w-0 leading-tight"><h2 className="text-[13px] font-bold">Cài đặt</h2><p className="truncate text-[10px] text-[var(--muted)]">GRAPE2Launcher • {CURRENT_VERSION}</p></div>
+                  <div className="min-w-0 leading-tight"><h2 className="text-[13px] font-bold">Cài đặt</h2><p className="truncate text-[10px] text-[var(--muted)]">GRAPE2TV Pro • {CURRENT_VERSION}</p></div>
                 </div>
                 <button onClick={() => setSettingsOpen(false)} aria-label="Đóng cài đặt" className="t-focus grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/5"><X size={15} /></button>
               </div>
@@ -819,11 +881,12 @@ export default function App() {
                   <div>
                     <Seg label="Giao diện" value={theme} r={rad(10)} options={[{ v: "liquid", t: "Liquid Glass" }, { v: "xperia", t: "Xperia" }]} onChange={(v) => changeTheme(v as Theme)} />
                     <Seg label="Cỡ biểu tượng ứng dụng" value={iconSize} r={rad(10)} options={(["sm", "md", "lg"] as IconSize[]).map((k) => ({ v: k, t: ICON_SIZES[k].label }))} onChange={(v) => changeSetting({ iconSize: v as IconSize })} />
-                    <Seg label="Cỡ ô Thư viện" value={libSize} r={rad(10)} options={(["sm", "md", "lg"] as LibSize[]).map((k) => ({ v: k, t: LIB_SIZES[k].label }))} onChange={(v) => changeSetting({ libSize: v as LibSize })} />
-                    <p className="mb-0 mt-3 text-[10px] font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Hiển thị</p>
+                    <p className="mb-0 mt-3 text-[10px] font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Hiển thị &amp; hiệu năng</p>
                     <Toggle label="Đồng hồ 24 giờ" on={clock24} r={rad(10)} onChange={(v) => changeSetting({ clock24: v })} />
+                    <Toggle label="Chuyển động nhẹ (giảm mờ, bóng, hiệu ứng)" on={softMotion} r={rad(10)} onChange={(v) => changeSetting({ softMotion: v })} />
+                    <p className="mb-0 mt-3 text-[10px] font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Music Center</p>
+                    <Seg label="Cỡ ô Thư viện" value={libSize} r={rad(10)} options={(["sm", "md", "lg"] as LibSize[]).map((k) => ({ v: k, t: LIB_SIZES[k].label }))} onChange={(v) => changeSetting({ libSize: v as LibSize })} />
                     <Toggle label="Sóng nhạc VU mini" on={vuOn} r={rad(10)} onChange={(v) => changeSetting({ vuOn: v })} />
-                    <Toggle label="Chuyển động nhẹ" on={softMotion} r={rad(10)} onChange={(v) => changeSetting({ softMotion: v })} />
                     <div className="mt-2.5 flex gap-1.5">
                       <SBtn r={rad(10)} onClick={startArrange} className="flex-1">Sắp xếp ứng dụng</SBtn>
                       <SBtn r={rad(10)} onClick={resetOrder}>Đặt lại</SBtn>
@@ -896,7 +959,7 @@ export default function App() {
                     {diag && <pre className="mt-2 whitespace-pre-wrap break-words border border-white/10 bg-black/30 p-2 font-sans text-[10px] leading-snug" style={{ borderRadius: rad(10) }}>{diag}</pre>}
                     <p className="mb-1 mt-3 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-[var(--muted)]"><Info size={12} /> Về ứng dụng</p>
                     <div className="space-y-1 text-[11px]">
-                      {([["Tên", "GRAPE2Launcher"], ["Phiên bản", CURRENT_VERSION], ["Gói", PACKAGE_NAME], ["Kho cập nhật", REPO]] as const).map(([k, v]) => (
+                      {([["Tên", "GRAPE2TV Pro"], ["Phiên bản", CURRENT_VERSION], ["Gói", PACKAGE_NAME], ["Kho cập nhật", REPO]] as const).map(([k, v]) => (
                         <p key={k} className="flex justify-between gap-2"><span className="text-[var(--muted)]">{k}</span><span className="text-right font-semibold [overflow-wrap:anywhere]">{v}</span></p>
                       ))}
                     </div>

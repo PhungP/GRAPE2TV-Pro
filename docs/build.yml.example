@@ -1,0 +1,25 @@
+name: Build
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm, cache-dependency-path: web/package-lock.json }
+      - name: Web (typecheck + build)
+        working-directory: web
+        run: npm ci && npx tsc --noEmit && npm run build
+      - uses: android-actions/setup-android@v3
+      - name: Android (unit test + debug + release chưa ký)
+        run: ./gradlew test assembleDebug assembleRelease
+      - name: Kiểm tra applicationId / version
+        run: |
+          grep -q 'applicationId = "com.grape.launcher"' app/build.gradle.kts
+          ls app/build/outputs/apk/*/*.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: GRAPE2TV-Pro-apk, path: app/build/outputs/apk/**/*.apk }

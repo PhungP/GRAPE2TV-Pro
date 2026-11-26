@@ -17,11 +17,14 @@ import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.view.KeyEvent
 import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Base64
@@ -36,16 +39,28 @@ import java.net.HttpURLConnection
 import java.net.URL
 import android.webkit.WebView
 
-/** Cầu nối JavaScript ⇄ Android. Tên trong JS: window.Android */
+/**
+ * Cầu nối JavaScript ⇄ Android. Tên trong JS: window.Android
+ *
+ * Hiệu năng: danh sách app, bài đang phát và trạng thái mạng đều được GIỮ ĐỆM và chỉ tính lại khi hệ thống báo thay đổi
+ * (broadcast gói, MediaController.Callback, NetworkCallback). Giao diện chỉ đọc bản đệm nên các lệnh gọi lặp lại gần như miễn phí,
+ * và Kotlin đẩy sự kiện lên JS (window.__mediaChanged / __netChanged / __appsChanged) thay vì để JS hỏi liên tục.
+ */
 class LauncherBridge(private val activity: Activity) {
 
     private val ctx: Context = activity.applicationContext
+    private val main = Handler(Looper.getMainLooper())
     private val iconCache = HashMap<String, String>()
     private var downloadId = -1L
     @Volatile var webView: WebView? = null
-    private var queueKey = ""
-    private var queueAt = 0L
-    private var queueJson = JSONArray()
+    /** Launcher đang hiển thị? Khi ẩn thì không đẩy sự kiện lên JS; khi quay lại JS tự đồng bộ lại. */
+    @Volatile var active = true
+    @Volatile private var coversJson: String? = null
+    @Volatile private var coversAt = 0L
+    private val infoJson: String by lazy {
+        val v = try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName } catch (_: Exception) { "1.0.0" }
+        JSONObject().put("versionName", v).put("packageName", ctx.packageName).toString()
+    }
 
     private val downloadReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context?, intent: Intent?) {
@@ -54,40 +69,108 @@ class LauncherBridge(private val activity: Activity) {
         }
     }
 
+    // ---------- Giữ đệm danh sách ứng dụng ----------
+    @Volatile private var appsJson: String? = null
+    private val appsLock = Any()
+    private val pkgReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, intent: Intent?) {
+            val pkg = intent?.data?.schemeSpecificPart
+            synchronized(appsLock) { if (pkg != null) iconCache.remove(pkg); appsJson = null }
+            Thread { getApps(); push("__appsChanged") }.start()
+        }
+    }
+
+    // ---------- Giữ đệm MediaSession ----------
+    private val mediaLock = Any()
+    @Volatile private var controllers: List<MediaController> = emptyList()
+    private val callbacks = HashMap<MediaSession.Token, MediaController.Callback>()
+    @Volatile private var needAccess = false
+    @Volatile private var current: MediaController? = null
+    @Volatile private var curMd: MediaMetadata? = null
+    @Volatile private var curPs: PlaybackState? = null
+    @Volatile private var nowJson = "{}"
+    private var sessionListenerOn = false
+    private var queueKey = ""
+    private var queueJson = JSONArray()
+    private val sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { refreshMedia() }
+    private val mediaCallback = object : MediaController.Callback() {
+        override fun onMetadataChanged(metadata: MediaMetadata?) { rebuildNow() }
+        override fun onPlaybackStateChanged(state: PlaybackState?) { rebuildNow() }
+        override fun onQueueChanged(queue: MutableList<MediaSession.QueueItem>?) { queueKey = ""; rebuildNow() }
+        override fun onSessionDestroyed() { refreshMedia() }
+    }
+
+    // ---------- Giữ đệm mạng ----------
+    @Volatile private var netCb: ConnectivityManager.NetworkCallback? = null
+
+    // đẩy sự kiện lên JS, gộp các lần gọi dồn dập
+    private val pushed = HashSet<String>()
+    private fun push(fn: String) {
+        if (!active) return
+        synchronized(pushed) { if (!pushed.add(fn)) return }
+        main.postDelayed({
+            synchronized(pushed) { pushed.remove(fn) }
+            webView?.evaluateJavascript("window.$fn && window.$fn()", null)
+        }, 60)
+    }
+
     init {
         ContextCompat.registerReceiver(
             ctx, downloadReceiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_EXPORTED
         )
+        val pf = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED); addAction(Intent.ACTION_PACKAGE_REMOVED); addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addDataScheme("package")
+        }
+        ContextCompat.registerReceiver(ctx, pkgReceiver, pf, ContextCompat.RECEIVER_EXPORTED)
+        MediaListenerService.onEvent = { main.post { refreshMedia() } }
+        Thread { getApps() }.start()      // làm nóng bản đệm để lần mở đầu không bị chậm
+        main.post { refreshMedia(); watchNetwork() }
     }
 
     fun release() {
         try { ctx.unregisterReceiver(downloadReceiver) } catch (_: Exception) {}
+        try { ctx.unregisterReceiver(pkgReceiver) } catch (_: Exception) {}
+        MediaListenerService.onEvent = null
+        main.removeCallbacksAndMessages(null)
+        unwatchMedia()
+        try { netCb?.let { (ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).unregisterNetworkCallback(it) } } catch (_: Exception) {}
+        netCb = null
     }
+
+    /** Launcher quay lại phía trước: đọc lại phiên nhạc (đề phòng vừa cấp/thu hồi quyền) rồi để JS tự đồng bộ. */
+    fun onResume() { active = true; refreshMedia() }
+    fun onPause() { active = false }
 
     // ---------- Ứng dụng ----------
 
     @JavascriptInterface
     fun getApps(): String {
-        val pm = ctx.packageManager
-        val found = LinkedHashMap<String, ResolveInfo>()
-        for (cat in listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)) {
-            val query = Intent(Intent.ACTION_MAIN).addCategory(cat)
-            for (ri in pm.queryIntentActivities(query, 0)) {
-                val pkg = ri.activityInfo.packageName
-                if (pkg != ctx.packageName && !found.containsKey(pkg)) found[pkg] = ri
+        appsJson?.let { return it }
+        synchronized(appsLock) {
+            appsJson?.let { return it }
+            val pm = ctx.packageManager
+            val found = LinkedHashMap<String, ResolveInfo>()
+            for (cat in listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)) {
+                val query = Intent(Intent.ACTION_MAIN).addCategory(cat)
+                for (ri in pm.queryIntentActivities(query, 0)) {
+                    val pkg = ri.activityInfo.packageName
+                    if (pkg != ctx.packageName && !found.containsKey(pkg)) found[pkg] = ri
+                }
             }
+            // tính nhãn một lần (loadLabel khá tốn), rồi mới sắp xếp
+            val labeled = found.values.map { it to it.loadLabel(pm).toString() }.sortedBy { it.second.lowercase() }
+            val arr = JSONArray()
+            for ((ri, label) in labeled) {
+                val pkg = ri.activityInfo.packageName
+                arr.put(JSONObject().apply {
+                    put("name", label)
+                    put("pkg", pkg)
+                    put("icon", iconCache.getOrPut(pkg) { iconToBase64(ri) })
+                })
+            }
+            return arr.toString().also { appsJson = it }
         }
-        val sorted = found.values.sortedBy { it.loadLabel(pm).toString().lowercase() }
-        val arr = JSONArray()
-        for (ri in sorted) {
-            val pkg = ri.activityInfo.packageName
-            arr.put(JSONObject().apply {
-                put("name", ri.loadLabel(pm).toString())
-                put("pkg", pkg)
-                put("icon", iconCache.getOrPut(pkg) { iconToBase64(ri) })
-            })
-        }
-        return arr.toString()
     }
 
     private fun iconToBase64(ri: ResolveInfo): String = try {
@@ -117,7 +200,7 @@ class LauncherBridge(private val activity: Activity) {
 
     // ---------- Nhạc đang phát (MediaSession) ----------
 
-    private fun controllers(): List<MediaController>? {
+    private fun queryControllers(): List<MediaController>? {
         val base = try {
             val msm = ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
             msm.getActiveSessions(ComponentName(ctx, MediaListenerService::class.java))
@@ -143,39 +226,99 @@ class LauncherBridge(private val activity: Activity) {
             ?: list.firstOrNull { it.metadata != null }
             ?: list.firstOrNull()
 
+    private fun unwatchMedia() {
+        synchronized(mediaLock) {
+            for (c in controllers) try { c.unregisterCallback(mediaCallback) } catch (_: Exception) {}
+            callbacks.clear()
+            controllers = emptyList()
+            if (sessionListenerOn) {
+                try { (ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager).removeOnActiveSessionsChangedListener(sessionsListener) } catch (_: Exception) {}
+                sessionListenerOn = false
+            }
+        }
+    }
+
+    /** Hỏi hệ thống danh sách phiên nhạc (chỉ khi có sự kiện/khi quay lại), gắn callback, rồi dựng lại bản đệm. Chạy trên main thread. */
+    private fun refreshMedia() {
+        synchronized(mediaLock) {
+            val list = queryControllers()
+            if (list == null) {
+                needAccess = true
+                for (c in controllers) try { c.unregisterCallback(mediaCallback) } catch (_: Exception) {}
+                controllers = emptyList(); current = null; curMd = null; curPs = null
+            } else {
+                needAccess = false
+                val old = controllers.map { it.sessionToken }.toSet()
+                val now = list.map { it.sessionToken }.toSet()
+                for (c in controllers) if (c.sessionToken !in now) try { c.unregisterCallback(mediaCallback) } catch (_: Exception) {}
+                for (c in list) if (c.sessionToken !in old) try { c.registerCallback(mediaCallback, main) } catch (_: Exception) {}
+                controllers = list
+                if (!sessionListenerOn) {
+                    try {
+                        (ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager)
+                            .addOnActiveSessionsChangedListener(sessionsListener, ComponentName(ctx, MediaListenerService::class.java), main)
+                        sessionListenerOn = true
+                    } catch (_: SecurityException) {}
+                }
+            }
+        }
+        rebuildNow()
+    }
+
+    /** Dựng lại JSON "Đang phát" (không gồm vị trí). Chỉ báo JS khi nội dung thật sự đổi. */
+    private fun rebuildNow() {
+        val json: String
+        synchronized(mediaLock) {
+            if (needAccess) { current = null; curMd = null; curPs = null; json = JSONObject().put("needAccess", true).toString() }
+            else {
+                val c = pick(controllers)
+                current = c
+                if (c == null) { curMd = null; curPs = null; json = "{}" }
+                else {
+                    val md = c.metadata; val ps = c.playbackState
+                    curMd = md; curPs = ps
+                    json = JSONObject().apply {
+                        put("title", md?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: md?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE) ?: "")
+                        put("artist", md?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: "")
+                        put("album", md?.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: "")
+                        put("queue", upcoming(c, md, ps))
+                        put("playing", ps?.state == PlaybackState.STATE_PLAYING)
+                        put("duration", md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L)
+                        put("pkg", c.packageName)
+                    }.toString()
+                }
+            }
+            if (json == nowJson) return
+            nowJson = json
+        }
+        push("__mediaChanged")
+    }
+
     @JavascriptInterface
-    fun getNowPlaying(): String {
-        val list = controllers() ?: return JSONObject().put("needAccess", true).toString()
-        val c = pick(list) ?: return "{}"
-        val md = c.metadata
-        val ps = c.playbackState
+    fun getNowPlaying(): String = nowJson
+
+    /** Vị trí phát hiện tại, tính từ bản đệm PlaybackState (không gọi hệ thống). JS gọi mỗi giây để vẽ thanh tiến độ. */
+    @JavascriptInterface
+    fun getProgress(): String {
+        val ps = curPs
         val playing = ps?.state == PlaybackState.STATE_PLAYING
         var pos = ps?.position ?: 0L
         if (pos < 0) pos = 0L
         if (playing && ps != null) pos += ((SystemClock.elapsedRealtime() - ps.lastPositionUpdateTime) * ps.playbackSpeed).toLong()
-        return JSONObject().apply {
-            put("title", md?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: md?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE) ?: "")
-            put("artist", md?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: "")
-            put("album", md?.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: "")
-            put("queue", upcoming(c))
-            put("playing", playing)
-            put("position", maxOf(0L, pos))
-            put("duration", md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L)
-            put("pkg", c.packageName)
-        }.toString()
+        val dur = curMd?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
+        return """{"position":${maxOf(0L, pos)},"duration":$dur,"playing":$playing}"""
     }
 
-    /** Các bài tiếp theo trong hàng đợi (MediaSession queue). Lưu đệm vài giây vì đọc hàng đợi khá nặng. */
-    private fun upcoming(c: MediaController): JSONArray {
-        val title = c.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: ""
+    /** Các bài tiếp theo trong hàng đợi (MediaSession queue). Chỉ đọc lại khi đổi bài/đổi hàng đợi. */
+    private fun upcoming(c: MediaController, md: MediaMetadata?, ps: PlaybackState?): JSONArray {
+        val title = md?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: ""
         val key = c.packageName + "|" + title
-        val now = SystemClock.elapsedRealtime()
-        if (key == queueKey && now - queueAt < 4000) return queueJson
+        if (key == queueKey) return queueJson
         val arr = JSONArray()
         try {
             val q = c.queue
             if (q != null && q.isNotEmpty()) {
-                val activeId = c.playbackState?.activeQueueItemId ?: -1L
+                val activeId = ps?.activeQueueItemId ?: -1L
                 var idx = q.indexOfFirst { it.queueId == activeId }
                 if (idx < 0) idx = q.indexOfFirst { it.description.title?.toString() == title }
                 val from = if (idx >= 0) idx + 1 else 0
@@ -185,7 +328,7 @@ class LauncherBridge(private val activity: Activity) {
                 }
             }
         } catch (_: Exception) {}
-        queueKey = key; queueAt = now; queueJson = arr
+        queueKey = key; queueJson = arr
         return arr
     }
 
@@ -213,8 +356,7 @@ class LauncherBridge(private val activity: Activity) {
     /** Ảnh bìa bài đang phát (JPEG base64, tối đa 256px). Rỗng nếu app nhạc không cung cấp. */
     @JavascriptInterface
     fun getArt(): String = try {
-        val c = controllers()?.let { pick(it) }
-        val md = c?.metadata
+        val md = curMd
         val bmp = md?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: md?.getBitmap(MediaMetadata.METADATA_KEY_ART)
             ?: md?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
@@ -254,7 +396,7 @@ class LauncherBridge(private val activity: Activity) {
 
     @JavascriptInterface
     fun media(action: String) {
-        val c = controllers()?.let { pick(it) }
+        val c = current
         if (c == null) { // không thấy phiên nhạc: gửi phím media tới app đang giữ nút media
             when (action) {
                 "next" -> key(null, KeyEvent.KEYCODE_MEDIA_NEXT)
@@ -278,7 +420,7 @@ class LauncherBridge(private val activity: Activity) {
     /** Báo cáo chi tiết từng phiên nhạc: dùng để biết app nhạc đã cung cấp những thông tin gì cho launcher. */
     @JavascriptInterface
     fun debugSessions(): String {
-        val list = controllers() ?: return "Chưa cấp quyền truy cập thông báo cho GRAPE2Launcher."
+        val list = queryControllers() ?: return "Chưa cấp quyền truy cập thông báo cho GRAPE2TV Pro."
         val notif = MediaListenerService.instance?.let { "đã kết nối" } ?: "chưa kết nối"
         if (list.isEmpty()) return "Không thấy phiên nhạc nào (dịch vụ thông báo: $notif). Hãy phát nhạc trong GRAPE2Play rồi thử lại. Nếu vẫn trống: app nhạc chưa tạo MediaSession đang hoạt động."
         val sb = StringBuilder("Dịch vụ thông báo: $notif\n")
@@ -303,6 +445,20 @@ class LauncherBridge(private val activity: Activity) {
 
     // ---------- Mạng + thư viện ----------
 
+    private fun watchNetwork() {
+        if (Build.VERSION.SDK_INT < 24 || netCb != null) return   // API < 24: JS tự hỏi thưa (30 giây/lần)
+        try {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) { push("__netChanged") }
+                override fun onLost(network: Network) { push("__netChanged") }
+                override fun onCapabilitiesChanged(network: Network, caps: android.net.NetworkCapabilities) { push("__netChanged") }
+            }
+            cm.registerDefaultNetworkCallback(cb, main)
+            netCb = cb
+        } catch (_: Exception) {}
+    }
+
     @Suppress("DEPRECATION")
     @JavascriptInterface
     fun getNetwork(): String {
@@ -310,7 +466,7 @@ class LauncherBridge(private val activity: Activity) {
         val info = cm.activeNetworkInfo
         if (info == null || !info.isConnected) return """{"type":"none","level":0}"""
         if (info.type == ConnectivityManager.TYPE_WIFI) {
-            val rssi = try { (ctx.getSystemService(Context.WIFI_SERVICE) as WifiManager).connectionInfo.rssi } catch (_: Exception) { -60 }
+            val rssi = try { (ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).connectionInfo.rssi } catch (_: Exception) { -60 }
             val level = when { rssi > -55 -> 4; rssi > -65 -> 3; rssi > -75 -> 2; else -> 1 }
             return """{"type":"wifi","level":$level}"""
         }
@@ -324,6 +480,8 @@ class LauncherBridge(private val activity: Activity) {
      */
     @JavascriptInterface
     fun getLibraryCovers(): String {
+        val nowMs = SystemClock.elapsedRealtime()
+        coversJson?.let { if (nowMs - coversAt < 30_000) return it }
         val arr = JSONArray()
         try {
             ctx.contentResolver.query(Uri.parse("content://com.grape.play.library/albums"), arrayOf("cover"), null, null, null)?.use { c ->
@@ -338,7 +496,7 @@ class LauncherBridge(private val activity: Activity) {
                 }
             }
         } catch (_: Exception) { /* chưa có provider / không đọc được */ }
-        return arr.toString()
+        return arr.toString().also { coversJson = it; coversAt = nowMs }
     }
 
     // ---------- Hệ thống ----------
@@ -358,10 +516,7 @@ class LauncherBridge(private val activity: Activity) {
     fun openSystemSettings() = startSafe(Intent(Settings.ACTION_SETTINGS))
 
     @JavascriptInterface
-    fun getInfo(): String {
-        val v = try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName } catch (_: Exception) { "1.0.0" }
-        return JSONObject().put("versionName", v).put("packageName", ctx.packageName).toString()
-    }
+    fun getInfo(): String = infoJson
 
     // ---------- Cập nhật APK từ GitHub ----------
 
@@ -374,7 +529,7 @@ class LauncherBridge(private val activity: Activity) {
         apkFile().delete()
         val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val req = DownloadManager.Request(Uri.parse(url))
-            .setTitle("GRAPE2Launcher")
+            .setTitle("GRAPE2TV Pro")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
             .setDestinationInExternalFilesDir(ctx, null, "update.apk")
         downloadId = dm.enqueue(req)

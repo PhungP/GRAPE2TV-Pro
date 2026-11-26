@@ -5,9 +5,12 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// Chỉ cần sửa versionName ở đây (hoặc truyền -PversionName=1.0.2); versionCode tự suy ra: 1.0.3 -> 10003
-val appVersionName: String = (project.findProperty("versionName") as String?) ?: "1.0.3"
+// Chỉ cần sửa versionName ở đây (hoặc truyền -PversionName=1.0.2); versionCode tự suy ra: 1.1.0 -> 10100
+val appVersionName: String = (project.findProperty("versionName") as String?) ?: "1.1.0"
 val appVersionCode: Int = appVersionName.split(".").map { it.toIntOrNull() ?: 0 }.let { (it.getOrElse(0) { 0 } * 10000) + (it.getOrElse(1) { 0 } * 100) + it.getOrElse(2) { 0 } }
+
+// Tên file APK: GRAPE2TV-Pro-<phiên bản>-<loại>.apk
+base.archivesName.set("GRAPE2TV-Pro-$appVersionName")
 
 android {
     namespace = "com.grape.launcher"
@@ -43,7 +46,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 + rút gọn tài nguyên. Các phương thức @JavascriptInterface và dịch vụ thông báo được giữ lại trong proguard-rules.pro
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (ksFile != null) signingConfig = signingConfigs.getByName("release")
         }
     }

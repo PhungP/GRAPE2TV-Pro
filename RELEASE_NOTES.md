@@ -1,6 +1,5 @@
-- Cửa sổ Cài đặt: gọn hơn, chia thẻ (Giao diện / Nền / Cập nhật / Hệ thống), chữ nhỏ hơn; con trỏ chỉ di chuyển trong cửa sổ
-- Thêm hình nền từ nguồn miễn phí (ảnh ngẫu nhiên Picsum/Unsplash, ảnh Bing mỗi ngày)
-- Thêm bảo vệ màn hình (đồng hồ dịch chuyển, 2/5/10/30 phút)
-- Bố cục mới: Thư viện âm nhạc thu thành ô vuông bên trái, hộp Đang phát ở giữa màn hình, thêm ô Tiếp theo bên phải
-- Bỏ chữ "Trình phát nhạc" dưới ô GRAPE2Play
-- "Kiểm tra nhạc" báo chi tiết app nhạc cung cấp những thông tin nào
+- Đổi tên thành GRAPE2TV Pro (gói và khoá ký giữ nguyên, cài đè giữ nguyên dữ liệu)
+- Nhẹ hơn: nhạc, mạng, danh sách app cập nhật theo sự kiện thay vì hỏi liên tục; dừng hoàn toàn khi launcher ở nền
+- Mượt hơn: giảm hiệu ứng mờ/đổ bóng, đồng hồ và thanh tiến độ không còn làm vẽ lại cả màn hình
+- Giao diện mới tông Graphite & Grape Purple, icon và banner mới
+- Tự bật "Chuyển động nhẹ" trên thiết bị yếu
