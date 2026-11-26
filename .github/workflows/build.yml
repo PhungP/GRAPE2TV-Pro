@@ -14,7 +14,6 @@ jobs:
       - name: Web (typecheck + build)
         working-directory: web
         run: npm ci && npx tsc --noEmit && npm run build
-      - uses: android-actions/setup-android@v3
       - name: Android (unit test + debug + release chưa ký)
         run: ./gradlew test assembleDebug assembleRelease
       - name: Kiểm tra applicationId / version
