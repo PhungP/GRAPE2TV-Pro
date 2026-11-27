@@ -132,7 +132,7 @@ const lowEnd = (() => { const n = navigator as Navigator & { deviceMemory?: numb
 const GRAPE_PKG = "com.grape.play"; // gói của ứng dụng GRAPE2Play đầy đủ — sửa nếu khác
 const SETTINGS_KEY = "grape-launcher-settings";
 
-const DEFAULT_VERSION = "v1.1.0";
+const DEFAULT_VERSION = "v1.1.1";
 const REPO = "PhungP/GRAPE2TV-Pro"; // https://github.com/PhungP/GRAPE2TV-Pro — kho GitHub Releases dùng để kiểm tra cập nhật (URL cũ grape2launcher vẫn được GitHub chuyển hướng)
 
 const albums: Album[] = [

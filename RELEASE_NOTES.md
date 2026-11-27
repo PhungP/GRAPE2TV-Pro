@@ -1,5 +1,5 @@
-- Đổi tên thành GRAPE2TV Pro (gói và khoá ký giữ nguyên, cài đè giữ nguyên dữ liệu)
-- Nhẹ hơn: nhạc, mạng, danh sách app cập nhật theo sự kiện thay vì hỏi liên tục; dừng hoàn toàn khi launcher ở nền
-- Mượt hơn: giảm hiệu ứng mờ/đổ bóng, đồng hồ và thanh tiến độ không còn làm vẽ lại cả màn hình
-- Giao diện mới tông Graphite & Grape Purple, icon và banner mới
-- Tự bật "Chuyển động nhẹ" trên thiết bị yếu
+- Ổn định hơn: tự phục hồi khi giao diện bị treo hoặc màn hình đen (renderer WebView bị kill), có giới hạn số lần thử và màn hình lỗi bấm OK để thử lại
+- Thẻ thời tiết mới: icon lớn, nhiệt độ, cảm giác, cao/thấp, khả năng mưa; xử lý mất mạng, quá hạn, dữ liệu cũ và nút Thử lại
+- Chẩn đoán: Cài đặt → Hệ thống → "Chẩn đoán treo / màn hình đen"
+- Cập nhật an toàn hơn: kiểm tra gói, chữ ký và phiên bản trước khi cài; chặn hạ cấp
+- Giảm RAM khi đọc ảnh bìa nhạc; luồng nền gọn hơn
