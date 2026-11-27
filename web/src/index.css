@@ -192,3 +192,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 html, body { background: #101014; }
 ::-webkit-scrollbar { display: none; }
 body { cursor: none; }
+
+/* Thẻ thời tiết: nhiệt độ đổi thì mờ vào nhẹ một lần (không chạy liên tục) */
+@keyframes wxFade { from { opacity: .35; } to { opacity: 1; } }
+.wx-fade { animation: wxFade .35s ease-out both; }
+.soft .wx-fade { animation: none; }

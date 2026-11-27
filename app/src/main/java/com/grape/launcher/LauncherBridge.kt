@@ -8,6 +8,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -37,6 +38,8 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import android.webkit.WebView
 
 /**
@@ -55,6 +58,20 @@ class LauncherBridge(private val activity: Activity) {
     @Volatile var webView: WebView? = null
     /** Launcher đang hiển thị? Khi ẩn thì không đẩy sự kiện lên JS; khi quay lại JS tự đồng bộ lại. */
     @Volatile var active = true
+    /** Cầu nối với MainActivity (giám sát WebView). */
+    @Volatile var onReady: (() -> Unit)? = null
+    @Volatile var onRecover: ((String) -> Unit)? = null
+    @Volatile var stateProvider: (() -> String)? = null
+    @Volatile private var released = false
+    // Luồng nền dùng chung (tối đa 2) thay cho việc tạo Thread mới mỗi lần; dọn khi release()
+    private val io = Executors.newFixedThreadPool(2) { r -> Thread(r, "g2tv-io").apply { isDaemon = true } }
+    private fun bg(block: () -> Unit) { try { io.execute { try { block() } catch (e: Throwable) { Diag.w("bg", "${e.javaClass.simpleName}: ${e.message}") } } } catch (_: RejectedExecutionException) {} }
+    @Volatile private var appsGen = 0
+    private val refreshPending = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var artKey = ""
+    @Volatile private var artB64 = ""
+    @Volatile private var apkVerified = false
+    @Volatile private var apkRejected = false
     @Volatile private var coversJson: String? = null
     @Volatile private var coversAt = 0L
     private val infoJson: String by lazy {
@@ -65,7 +82,10 @@ class LauncherBridge(private val activity: Activity) {
     private val downloadReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context?, intent: Intent?) {
             val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) ?: -1L
-            if (id == downloadId && downloadId != -1L) installApk()
+            if (id == downloadId && downloadId != -1L) bg {
+                if (verifyApk()) { apkVerified = true; installApk() }
+                else { apkRejected = true; apkFile().delete() }
+            }
         }
     }
 
@@ -75,8 +95,9 @@ class LauncherBridge(private val activity: Activity) {
     private val pkgReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context?, intent: Intent?) {
             val pkg = intent?.data?.schemeSpecificPart
-            synchronized(appsLock) { if (pkg != null) iconCache.remove(pkg); appsJson = null }
-            Thread { getApps(); push("__appsChanged") }.start()
+            synchronized(appsLock) { if (pkg != null) iconCache.remove(pkg); appsJson = null; appsGen++ }
+            // gộp nhiều broadcast liên tiếp (cài nhiều app) thành một lần làm mới
+            if (refreshPending.compareAndSet(false, true)) bg { Thread.sleep(400); refreshPending.set(false); getApps(); push("__appsChanged") }
         }
     }
 
@@ -106,11 +127,11 @@ class LauncherBridge(private val activity: Activity) {
     // đẩy sự kiện lên JS, gộp các lần gọi dồn dập
     private val pushed = HashSet<String>()
     private fun push(fn: String) {
-        if (!active) return
+        if (!active || released) return
         synchronized(pushed) { if (!pushed.add(fn)) return }
         main.postDelayed({
             synchronized(pushed) { pushed.remove(fn) }
-            webView?.evaluateJavascript("window.$fn && window.$fn()", null)
+            if (!released) try { webView?.evaluateJavascript("window.$fn && window.$fn()", null) } catch (_: Exception) {}
         }, 60)
     }
 
@@ -124,11 +145,13 @@ class LauncherBridge(private val activity: Activity) {
         }
         ContextCompat.registerReceiver(ctx, pkgReceiver, pf, ContextCompat.RECEIVER_EXPORTED)
         MediaListenerService.onEvent = { main.post { refreshMedia() } }
-        Thread { getApps() }.start()      // làm nóng bản đệm để lần mở đầu không bị chậm
+        bg { getApps() }      // làm nóng bản đệm để lần mở đầu không bị chậm
         main.post { refreshMedia(); watchNetwork() }
     }
 
     fun release() {
+        released = true
+        io.shutdownNow()
         try { ctx.unregisterReceiver(downloadReceiver) } catch (_: Exception) {}
         try { ctx.unregisterReceiver(pkgReceiver) } catch (_: Exception) {}
         MediaListenerService.onEvent = null
@@ -140,7 +163,42 @@ class LauncherBridge(private val activity: Activity) {
 
     /** Launcher quay lại phía trước: đọc lại phiên nhạc (đề phòng vừa cấp/thu hồi quyền) rồi để JS tự đồng bộ. */
     fun onResume() { active = true; refreshMedia() }
-    fun onPause() { active = false }
+    fun onStop() { active = false }
+
+    /** Hệ thống báo thiếu RAM: bỏ các bản đệm có thể dựng lại. */
+    fun trim() { coversJson = null; artKey = ""; artB64 = "" }
+
+    // ---------- Giám sát WebView (gọi từ JS) ----------
+
+    /** React đã mount xong. Không gọi trong thời hạn → MainActivity coi là treo/màn hình đen và phục hồi. */
+    @JavascriptInterface fun ready() { Diag.i("js", "ready"); onReady?.invoke() }
+
+    /** Lỗi JS nghiêm trọng (ErrorBoundary / lỗi chưa bắt). Giới hạn tần suất để không làm tràn nhật ký. */
+    private var lastErrAt = 0L
+    @JavascriptInterface fun reportError(msg: String, fatal: Boolean) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastErrAt > 2000) { lastErrAt = now; Diag.w("js-error", msg.take(240)) }
+        if (fatal) onRecover?.invoke("js-fatal")
+    }
+
+    /** Người dùng bấm "Thử lại" ở màn hình lỗi của giao diện. */
+    @JavascriptInterface fun recover() { onRecover?.invoke("user-retry") }
+
+    @JavascriptInterface fun log(event: String, detail: String) { Diag.i("js:" + event.take(32), detail.take(160)) }
+
+    @JavascriptInterface
+    fun getDiagnostics(): String {
+        val rt = Runtime.getRuntime()
+        val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val mi = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+        val wvPkg = if (Build.VERSION.SDK_INT >= 26) try { WebView.getCurrentWebViewPackage()?.let { "${it.packageName} ${it.versionName}" } } catch (_: Exception) { null } else null
+        return buildString {
+            append("${stateProvider?.invoke() ?: "?"} active=$active needAccess=$needAccess\n")
+            append("Heap ${(rt.totalMemory() - rt.freeMemory()) shr 20}/${rt.maxMemory() shr 20} MB • RAM trống ${mi.availMem shr 20} MB${if (mi.lowMemory) " (THẤP)" else ""}\n")
+            append("WebView: ${wvPkg ?: "?"} • Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) • ${Build.MODEL}\n")
+            append("— Sự kiện gần nhất —\n").append(Diag.dump(30))
+        }
+    }
 
     // ---------- Ứng dụng ----------
 
@@ -149,6 +207,7 @@ class LauncherBridge(private val activity: Activity) {
         appsJson?.let { return it }
         synchronized(appsLock) {
             appsJson?.let { return it }
+            val gen = appsGen
             val pm = ctx.packageManager
             val found = LinkedHashMap<String, ResolveInfo>()
             for (cat in listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)) {
@@ -169,7 +228,7 @@ class LauncherBridge(private val activity: Activity) {
                     put("icon", iconCache.getOrPut(pkg) { iconToBase64(ri) })
                 })
             }
-            return arr.toString().also { appsJson = it }
+            return arr.toString().also { if (gen == appsGen) appsJson = it }   // nếu có gói đổi trong lúc dựng thì không lưu bản cũ
         }
     }
 
@@ -182,6 +241,7 @@ class LauncherBridge(private val activity: Activity) {
         d.draw(canvas)
         val out = ByteArrayOutputStream()
         bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+        bmp.recycle()
         Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     } catch (_: Exception) { "" }
 
@@ -337,7 +397,7 @@ class LauncherBridge(private val activity: Activity) {
     fun fetchText(url: String, id: String) {
         val host = try { Uri.parse(url).host ?: "" } catch (_: Exception) { "" }
         if (!url.startsWith("https://") || host !in setOf("www.bing.com")) { reply(id, ""); return }
-        Thread {
+        bg {
             var out = ""
             try {
                 val c = URL(url).openConnection() as HttpURLConnection
@@ -345,30 +405,52 @@ class LauncherBridge(private val activity: Activity) {
                 out = c.inputStream.bufferedReader().use { it.readText() }
             } catch (_: Exception) {}
             reply(id, out)
-        }.start()
+        }
     }
 
     private fun reply(id: String, text: String) {
         val js = "window.__cb && window.__cb(${JSONObject.quote(id)}, ${JSONObject.quote(text)})"
-        activity.runOnUiThread { webView?.evaluateJavascript(js, null) }
+        if (!released) activity.runOnUiThread { try { webView?.evaluateJavascript(js, null) } catch (_: Exception) {} }
     }
 
     /** Ảnh bìa bài đang phát (JPEG base64, tối đa 256px). Rỗng nếu app nhạc không cung cấp. */
     @JavascriptInterface
-    fun getArt(): String = try {
-        val md = curMd
-        val bmp = md?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
-            ?: md?.getBitmap(MediaMetadata.METADATA_KEY_ART)
-            ?: md?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
-            ?: loadArtUri(md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI) ?: md?.getString(MediaMetadata.METADATA_KEY_ART_URI) ?: md?.getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI))
-        if (bmp == null) "" else {
-            val scale = 256f / maxOf(bmp.width, bmp.height)
-            val small = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp
-            val out = ByteArrayOutputStream()
-            small.compress(Bitmap.CompressFormat.JPEG, 85, out)
-            Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-        }
-    } catch (_: Exception) { "" }
+    fun getArt(): String {
+        val md = curMd ?: return ""
+        val key = (current?.packageName ?: "") + "|" + (md.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "")
+        if (key == artKey) return artB64            // cùng bài: dùng lại, không giải mã/nén lại
+        val b64 = try {
+            val direct = md.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART) ?: md.getBitmap(MediaMetadata.METADATA_KEY_ART) ?: md.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+            if (direct != null) encodeThumb(direct, 85, owned = false)    // bitmap thuộc MediaMetadata: không được recycle
+            else {
+                val uri = md.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI) ?: md.getString(MediaMetadata.METADATA_KEY_ART_URI) ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
+                loadArtUri(uri)?.let { encodeThumb(it, 85, owned = true) } ?: ""
+            }
+        } catch (_: Throwable) { "" }              // gồm OutOfMemoryError: thiếu ảnh bìa tốt hơn là crash
+        artKey = key; artB64 = b64
+        return b64
+    }
+
+    /** Thu nhỏ còn tối đa 256px rồi nén JPEG → base64. owned=true: bitmap do ta tạo nên được giải phóng ngay. */
+    private fun encodeThumb(bmp: Bitmap, quality: Int, owned: Boolean): String {
+        val scale = 256f / maxOf(bmp.width, bmp.height)
+        val small = if (scale < 1f) Bitmap.createScaledBitmap(bmp, maxOf(1, (bmp.width * scale).toInt()), maxOf(1, (bmp.height * scale).toInt()), true) else bmp
+        val out = ByteArrayOutputStream()
+        small.compress(Bitmap.CompressFormat.JPEG, quality, out)
+        if (small !== bmp) small.recycle()
+        if (owned) bmp.recycle()
+        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    }
+
+    /** Hệ số thu nhỏ khi giải mã (luỹ thừa 2) sao cho cạnh còn ≥ 256px: tránh giải mã ảnh bìa 3000×3000 đầy đủ chỉ để làm thumbnail. */
+    private fun sampleFor(w: Int, h: Int): Int { var s = 1; while (w / (s * 2) >= 256 && h / (s * 2) >= 256) s *= 2; return s }
+
+    private fun decodeBlob(blob: ByteArray): Bitmap? {
+        val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(blob, 0, blob.size, o)
+        if (o.outWidth <= 0) return null
+        return android.graphics.BitmapFactory.decodeByteArray(blob, 0, blob.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleFor(o.outWidth, o.outHeight) })
+    }
 
     private fun has(c: MediaController, a: Long) = ((c.playbackState?.actions ?: 0L) and a) != 0L
 
@@ -391,7 +473,13 @@ class LauncherBridge(private val activity: Activity) {
     /** Một số app chỉ cung cấp đường dẫn ảnh bìa (content:// hoặc file://) thay vì bitmap. */
     private fun loadArtUri(uri: String?): Bitmap? {
         if (uri.isNullOrEmpty() || !(uri.startsWith("content://") || uri.startsWith("file://"))) return null
-        return try { ctx.contentResolver.openInputStream(Uri.parse(uri))?.use { android.graphics.BitmapFactory.decodeStream(it) } } catch (_: Exception) { null }
+        return try {
+            val u = Uri.parse(uri)
+            val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            ctx.contentResolver.openInputStream(u)?.use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
+            if (o.outWidth <= 0) null
+            else ctx.contentResolver.openInputStream(u)?.use { android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleFor(o.outWidth, o.outHeight) }) }
+        } catch (_: Exception) { null }
     }
 
     @JavascriptInterface
@@ -487,15 +575,11 @@ class LauncherBridge(private val activity: Activity) {
             ctx.contentResolver.query(Uri.parse("content://com.grape.play.library/albums"), arrayOf("cover"), null, null, null)?.use { c ->
                 while (c.moveToNext() && arr.length() < 12) {
                     val blob = c.getBlob(0) ?: continue
-                    val bmp = android.graphics.BitmapFactory.decodeByteArray(blob, 0, blob.size) ?: continue
-                    val scale = 256f / maxOf(bmp.width, bmp.height)
-                    val small = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp
-                    val out = ByteArrayOutputStream()
-                    small.compress(Bitmap.CompressFormat.JPEG, 82, out)
-                    arr.put(Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP))
+                    val bmp = decodeBlob(blob) ?: continue
+                    arr.put(encodeThumb(bmp, 82, owned = true))
                 }
             }
-        } catch (_: Exception) { /* chưa có provider / không đọc được */ }
+        } catch (_: Throwable) { /* chưa có provider / không đọc được / thiếu RAM */ }
         return arr.toString().also { coversJson = it; coversAt = nowMs }
     }
 
@@ -522,10 +606,18 @@ class LauncherBridge(private val activity: Activity) {
 
     private fun apkFile() = File(ctx.getExternalFilesDir(null), "update.apk")
 
+    /** Chỉ nhận APK từ GitHub Releases của chính dự án này (https, đúng máy chủ và đường dẫn). */
+    private fun allowedUpdateUrl(url: String): Boolean {
+        val u = try { Uri.parse(url) } catch (_: Exception) { return false }
+        val path = u.path ?: return false
+        return u.scheme == "https" && u.host == "github.com" && path.endsWith(".apk") &&
+            (path.startsWith("/PhungP/GRAPE2TV-Pro/releases/download/") || path.startsWith("/PhungP/grape2launcher/releases/download/"))
+    }
+
     @JavascriptInterface
     fun downloadAndInstall(url: String) {
-        // Chỉ nhận liên kết https của GitHub Releases
-        if (!url.startsWith("https://github.com/")) return
+        if (!allowedUpdateUrl(url)) { Diag.w("ota", "url rejected"); return }
+        apkVerified = false; apkRejected = false
         apkFile().delete()
         val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val req = DownloadManager.Request(Uri.parse(url))
@@ -533,16 +625,17 @@ class LauncherBridge(private val activity: Activity) {
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
             .setDestinationInExternalFilesDir(ctx, null, "update.apk")
         downloadId = dm.enqueue(req)
+        Diag.i("ota", "download started")
     }
 
     @JavascriptInterface
     fun getDownloadProgress(): Int {
-        if (downloadId == -1L) return -1
+        if (downloadId == -1L || apkRejected) return -1
         val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         dm.query(DownloadManager.Query().setFilterById(downloadId)).use { c ->
             if (!c.moveToFirst()) return -1
             return when (c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))) {
-                DownloadManager.STATUS_SUCCESSFUL -> 100
+                DownloadManager.STATUS_SUCCESSFUL -> if (apkVerified) 100 else 99   // chỉ báo 100% sau khi đã xác minh APK
                 DownloadManager.STATUS_FAILED -> -1
                 else -> {
                     val got = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
@@ -552,6 +645,26 @@ class LauncherBridge(private val activity: Activity) {
             }
         }
     }
+
+    @Suppress("DEPRECATION")
+    private fun signers(info: android.content.pm.PackageInfo): Set<String> =
+        if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners?.map { it.toCharsString() }?.toSet() ?: emptySet()
+        else info.signatures?.map { it.toCharsString() }?.toSet() ?: emptySet()
+
+    /** Trước khi mở trình cài đặt: đúng gói, đúng chữ ký của bản đang cài và versionCode CAO HƠN (chặn hạ cấp). */
+    @Suppress("DEPRECATION")
+    private fun verifyApk(): Boolean = try {
+        val pm = ctx.packageManager
+        val flags = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+        val neu = pm.getPackageArchiveInfo(apkFile().path, flags)
+        val cur = pm.getPackageInfo(ctx.packageName, flags)
+        val newCode = if (neu == null) -1L else if (Build.VERSION.SDK_INT >= 28) neu.longVersionCode else neu.versionCode.toLong()
+        val curCode = if (Build.VERSION.SDK_INT >= 28) cur.longVersionCode else cur.versionCode.toLong()
+        val ok = neu != null && neu.packageName == ctx.packageName && newCode > curCode &&
+            signers(neu).isNotEmpty() && signers(neu) == signers(cur)
+        Diag.i("ota", "verify ok=$ok new=$newCode cur=$curCode")
+        ok
+    } catch (e: Exception) { Diag.w("ota", "verify error ${e.javaClass.simpleName}"); false }
 
     private fun installApk() {
         if (Build.VERSION.SDK_INT >= 26 && !ctx.packageManager.canRequestPackageInstalls()) {

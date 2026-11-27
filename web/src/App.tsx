@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Settings as SettingsIcon, Play, Pause, SkipForward, SkipBack, Clock3, Sparkles, ChevronRight, X, Grape, Cloud, Droplets, Wind, Download, RefreshCw, CheckCircle2, Info, ShieldCheck, Loader2, Library } from "lucide-react";
+import { WeatherCard } from "./Weather";
+import { bridge, safeJson, nativeFetch, activeNow, activeSubs, useActiveTick, useNativeEvent, type AndroidBridge } from "./native";
+
 import "./index.css";
 
 type Album = { title: string; detail: string; minutes: string; hue: string; mark: string };
@@ -69,40 +72,6 @@ type QItem = { title: string; artist: string };
 type Session = { title?: string; artist?: string; album?: string; queue?: QItem[]; playing?: boolean; duration?: number; pkg?: string; needAccess?: boolean } | null;
 type Progress = { position: number; duration: number; playing: boolean };
 
-// ===== Cầu nối với Android (MainActivity.kt). Chạy trên trình duyệt thì Android = undefined → dùng dữ liệu mẫu =====
-type AndroidBridge = {
-  getApps(): string; launch(pkg: string): boolean; launchWith(pkg: string, extra: string): boolean; getArt(): string; getNowPlaying(): string; getProgress(): string; media(action: string): void;
-  openNotificationAccess(): void; openSystemSettings(): void; openWifiSettings(): void; getNetwork(): string; getLibraryCovers(): string; debugSessions(): string; fetchText(url: string, id: string): void; getInfo(): string;
-  downloadAndInstall(url: string): void; getDownloadProgress(): number;
-};
-declare global { interface Window { Android?: AndroidBridge; __onBack?: () => boolean; __cb?: (id: string, text: string) => void; __setActive?: (a: boolean) => void; __mediaChanged?: () => void; __netChanged?: () => void; __appsChanged?: () => void } }
-
-// ===== Launcher đang hiển thị hay đang ẩn (Android gọi __setActive khi onResume/onPause) =====
-// Khi ẩn: mọi bộ đếm dừng, không polling. Khi hiện lại: mỗi bộ đếm tự đồng bộ ngay một lần.
-let activeNow = typeof document === "undefined" ? true : document.visibilityState !== "hidden";
-const activeSubs = new Set<(a: boolean) => void>();
-const setActiveNow = (a: boolean) => { if (a === activeNow) return; activeNow = a; activeSubs.forEach((f) => f(a)); };
-window.__setActive = setActiveNow;
-document.addEventListener("visibilitychange", () => setActiveNow(document.visibilityState !== "hidden"));
-/** Chạy fn ngay rồi lặp mỗi `ms` mili-giây, chỉ khi launcher hiển thị; hiện lại thì chạy ngay. ms=0: không lặp (chỉ chạy lúc hiện lại). */
-function useActiveTick(fn: () => void, ms: number, on = true) {
-  const ref = useRef(fn); ref.current = fn;
-  useEffect(() => {
-    if (!on) return;
-    let t: number | undefined;
-    const start = () => { ref.current(); if (ms > 0) t = window.setInterval(() => ref.current(), ms); };
-    const stop = () => { if (t !== undefined) { window.clearInterval(t); t = undefined; } };
-    if (activeNow) start();
-    const sub = (a: boolean) => { stop(); if (a) start(); };
-    activeSubs.add(sub);
-    return () => { stop(); activeSubs.delete(sub); };
-  }, [ms, on]);
-}
-/** Đăng ký hàm Android gọi khi có thay đổi (window.__mediaChanged ...). */
-function useNativeEvent(name: "__mediaChanged" | "__netChanged" | "__appsChanged", fn: () => void) {
-  const ref = useRef(fn); ref.current = fn;
-  useEffect(() => { window[name] = () => ref.current(); return () => { window[name] = undefined; }; }, [name]);
-}
 // Đồng hồ: chỉ component dùng nó render lại (mỗi phút đổi chữ), không kéo cả App render theo
 const DAYS = ["Chủ Nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
 const clockText = (d: Date, c24: boolean) => { const h = d.getHours(); const hh = c24 ? h : h % 12 || 12; return `${String(hh).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}${c24 ? "" : h >= 12 ? " CH" : " SA"}`; };
@@ -157,19 +126,6 @@ const ProgressBar = React.memo(function ProgressBar({ hasBridge, playing, title,
     </div>
   );
 });
-// Gọi mạng qua Android (tránh giới hạn CORS của WebView); chỉ các máy chủ trong danh sách cho phép ở phía Android
-const pendingCb: Record<string, (t: string) => void> = {};
-window.__cb = (id, t) => { pendingCb[id]?.(t); delete pendingCb[id]; };
-const nativeFetch = (url: string) => new Promise<string>((resolve) => {
-  const b = window.Android;
-  if (!b) { resolve(""); return; }
-  const id = Math.random().toString(36).slice(2);
-  pendingCb[id] = resolve;
-  b.fetchText(url, id);
-  window.setTimeout(() => { if (pendingCb[id]) { delete pendingCb[id]; resolve(""); } }, 12000);
-});
-const bridge = (): AndroidBridge | undefined => window.Android;
-const safeJson = <T,>(raw: string | undefined, fallback: T): T => { try { return raw ? JSON.parse(raw) as T : fallback; } catch { return fallback; } };
 const PALETTE = ["#c01a22", "#d92b20", "#f26b16", "#e83e8c", "#18a84f", "#3e6be0", "#7a4bd6", "#0f9aa8", "#b7744a", "#8c8f94"];
 // Thiết bị yếu (RAM ≤ 2 GB hoặc ≤ 4 lõi): mặc định bật "Chuyển động nhẹ" — người dùng vẫn đổi được trong Cài đặt
 const lowEnd = (() => { const n = navigator as Navigator & { deviceMemory?: number }; return (n.deviceMemory !== undefined && n.deviceMemory <= 2) || (n.hardwareConcurrency !== undefined && n.hardwareConcurrency <= 4); })();
@@ -197,14 +153,6 @@ const demoApps: AppItem[] = [
   { name: "Qobuz", short: "Q", bg: "#3e6be0", note: "Hi-Res" },
   { name: "GRAPE2Play", short: "G", bg: "#ffab2e", note: "Đang chọn" },
 ];
-
-type Weather = { city: string; temp: number; condition: string; humidity: number; wind: number };
-const defaultWeather: Weather = { city: "Hải Phòng", temp: 24, condition: "Nhiều mây", humidity: 78, wind: 12 };
-function wmo(code: number) {
-  if (code === 0) return "Trời quang"; if (code <= 2) return "Ít mây"; if (code === 3) return "Nhiều mây";
-  if (code <= 48) return "Sương mù"; if (code <= 57) return "Mưa phùn"; if (code <= 67) return "Mưa";
-  if (code <= 77) return "Lạnh"; if (code <= 82) return "Mưa rào"; return "Dông";
-}
 
 function fmt(total: number) {
   const m = Math.floor(total / 60);
@@ -267,7 +215,6 @@ export default function App() {
   const [clock24, setClock24] = useState(true);
   const [softMotion, setSoftMotion] = useState(lowEnd);
   const [saveState, setSaveState] = useState("");
-  const [weather, setWeather] = useState<Weather>(defaultWeather);
   const [session, setSession] = useState<Session>(null);
   const [info, setInfo] = useState<{ versionName: string; packageName: string }>({ versionName: DEFAULT_VERSION, packageName: "com.grape.launcher" });
   const toastTimer = useRef<number | null>(null);
@@ -277,6 +224,8 @@ export default function App() {
   const playRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const settingsOpenRef = useRef(false);
+  // React đã mount xong → báo Android (nếu không báo trong 15 giây Android coi là treo và phục hồi)
+  useEffect(() => { bridge()?.ready(); }, []);
   const simTotal = 214;
   const CURRENT_VERSION = info.versionName.startsWith("v") ? info.versionName : `v${info.versionName}`;
   const PACKAGE_NAME = info.packageName;
@@ -351,35 +300,12 @@ export default function App() {
     }
     setApps(mapped);
   }, []);
-  useActiveTick(loadApps, 0);              // lần đầu + mỗi lần launcher hiện lại (bản đệm Android nên rất rẻ)
+  useActiveTick(loadApps, apps.length === 0 && hasBridge ? 3000 : 0);              // lần đầu + mỗi lần launcher hiện lại (bản đệm Android nên rất rẻ)
   useNativeEvent("__appsChanged", loadApps); // cài/gỡ/cập nhật app → Android báo lên
   const firstFocus = useRef(true);
   useEffect(() => {
     if (apps.length && firstFocus.current) { firstFocus.current = false; window.setTimeout(() => appRefs.current[0]?.focus({ preventScroll: true }), 150); }
   }, [apps]);
-
-  // Thời tiết Hải Phòng (Open-Meteo, không cần khóa API)
-  useEffect(() => {
-    let off = false;
-    let last = 0;
-    const load = async () => {
-      if (!activeNow || Date.now() - last < 19 * 60 * 1000) return; // không tải khi launcher ẩn; chỉ làm mới sau ~20 phút
-      last = Date.now();
-      const ac = new AbortController(); const to = window.setTimeout(() => ac.abort(), 10000);
-      try {
-        const r = await fetch("https://api.open-meteo.com/v1/forecast?latitude=20.8449&longitude=106.6881&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&timezone=Asia%2FBangkok", { signal: ac.signal });
-        const j = await r.json();
-        const c = j.current;
-        if (!off && c) setWeather({ city: "Hải Phòng", temp: Math.round(c.temperature_2m), condition: wmo(c.weather_code), humidity: Math.round(c.relative_humidity_2m), wind: Math.round(c.wind_speed_10m) });
-      } catch { last = 0; /* ngoại tuyến/hết giờ: giữ giá trị cũ, thử lại lần sau */ }
-      finally { window.clearTimeout(to); }
-    };
-    load();
-    const t = window.setInterval(load, 20 * 60 * 1000);
-    const sub = (a: boolean) => { if (a) load(); };
-    activeSubs.add(sub);
-    return () => { off = true; window.clearInterval(t); activeSubs.delete(sub); };
-  }, []);
 
   // Nhạc đang phát thật (MediaSession) — cần cấp "Quyền truy cập thông báo" cho launcher
   // Android đẩy sự kiện (__mediaChanged) mỗi khi bài/trạng thái đổi; vòng hỏi 10 giây chỉ là dự phòng. Chỉ cập nhật khi nội dung thật sự đổi.
@@ -704,17 +630,7 @@ export default function App() {
           <header className="flex items-start justify-between gap-4">
             <div className="flex min-w-0 items-center gap-5">
               <ClockBlock clock24={clock24} rad={rad(999)} />
-              <section aria-label="Thời tiết Hải Phòng" className="t-panel flex items-center gap-3 px-3 py-2">
-                <span className="grid h-9 w-9 shrink-0 place-items-center accent-soft" style={{ borderRadius: rad(999) }}><Cloud size={20} className="accent-text" /></span>
-                <div className="leading-none">
-                  <p className="text-[11px] font-semibold text-[var(--muted)]">{weather.city}</p>
-                  <p className="mt-1 text-[20px] font-extrabold leading-none tabular-nums">{weather.temp}°C <span className="text-[12px] font-semibold text-[var(--muted)]">{weather.condition}</span></p>
-                </div>
-                <div className="ml-1 flex shrink-0 items-center gap-3 border-l border-white/15 pl-3 text-[11px] text-[var(--muted)]">
-                  <span className="flex items-center gap-1"><Droplets size={13} className="accent-text" />{weather.humidity}%</span>
-                  <span className="flex items-center gap-1"><Wind size={13} className="accent-text" />{weather.wind} km/h</span>
-                </div>
-              </section>
+              <WeatherCard rad={rad(999) === 999 ? 14 : 4} />
             </div>
 
             <div className="flex items-center gap-2">
@@ -953,6 +869,7 @@ export default function App() {
                       <div className="grid grid-cols-1 gap-1.5">
                         <SBtn r={rad(10)} onClick={() => bridge()?.openNotificationAccess()}>Cấp quyền hiển thị nhạc</SBtn>
                         <SBtn r={rad(10)} onClick={checkMusic}>Kiểm tra nhạc (chẩn đoán GRAPE2Play)</SBtn>
+                        <SBtn r={rad(10)} onClick={() => setDiag(bridge()?.getDiagnostics() || "")}>Chẩn đoán treo / màn hình đen</SBtn>
                         <SBtn r={rad(10)} onClick={() => bridge()?.openSystemSettings()}>Cài đặt TV</SBtn>
                       </div>
                     ) : <p className="text-[11px] text-[var(--muted)]">Các mục hệ thống chỉ có khi chạy trên TV.</p>}
