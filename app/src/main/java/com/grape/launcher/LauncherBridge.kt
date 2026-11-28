@@ -611,6 +611,38 @@ class LauncherBridge(private val activity: Activity) {
         activity.runOnUiThread { try { activity.startActivity(intent) } catch (_: Exception) {} }
     }
 
+    // ---------- Launcher mặc định ----------
+
+    /** GRAPE2TV Pro đang là màn hình chính (nút HOME) mặc định? */
+    @JavascriptInterface
+    fun isDefaultLauncher(): Boolean = try {
+        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        ctx.packageManager.resolveActivity(home, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName == ctx.packageName
+    } catch (_: Exception) { false }
+
+    /**
+     * Android không cho app tự đặt mình làm mặc định; chỉ mở hộp thoại/màn hình hệ thống để người dùng xác nhận.
+     * Thử lần lượt: hộp thoại vai trò HOME (Android 10+) → cài đặt "Ứng dụng màn hình chính" → cài đặt ứng dụng mặc định.
+     * Trả về "role" | "settings" | "none" (không có màn hình nào: hướng dẫn thủ công ở phía giao diện).
+     */
+    @JavascriptInterface
+    fun setDefaultLauncher(): String {
+        if (Build.VERSION.SDK_INT >= 29) try {
+            val rm = ctx.getSystemService(android.app.role.RoleManager::class.java)
+            if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_HOME)) {
+                if (rm.isRoleHeld(android.app.role.RoleManager.ROLE_HOME)) return "role"
+                val i = rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_HOME)
+                activity.runOnUiThread { try { activity.startActivityForResult(i, 4711) } catch (_: Exception) {} }
+                return "role"
+            }
+        } catch (_: Exception) {}
+        for (action in listOf(Settings.ACTION_HOME_SETTINGS, Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)) {
+            val i = Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (i.resolveActivity(ctx.packageManager) != null) { startSafe(i); return "settings" }
+        }
+        return "none"
+    }
+
     @JavascriptInterface
     fun openNotificationAccess() = startSafe(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
 

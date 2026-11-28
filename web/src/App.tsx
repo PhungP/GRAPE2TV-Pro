@@ -135,7 +135,7 @@ const lowEnd = (() => { const n = navigator as Navigator & { deviceMemory?: numb
 const GRAPE_PKG = "com.grape.play"; // gói của ứng dụng GRAPE2Play đầy đủ — sửa nếu khác
 const SETTINGS_KEY = "grape-launcher-settings";
 
-const DEFAULT_VERSION = "v1.2.0";
+const DEFAULT_VERSION = "v1.2.1";
 const REPO = "PhungP/GRAPE2TV-Pro"; // https://github.com/PhungP/GRAPE2TV-Pro — kho GitHub Releases dùng để kiểm tra cập nhật (URL cũ grape2launcher vẫn được GitHub chuyển hướng)
 
 const albums: Album[] = [
@@ -203,6 +203,7 @@ export default function App() {
   const [wallUrl, setWallUrl] = useState("");
   const [tab, setTab] = useState<"ui" | "wall" | "update" | "system">("ui");
   const [diag, setDiag] = useState("");
+  const [isDefault, setIsDefault] = useState(false);
   const [saverOn, setSaverOn] = useState(false);
   const [saverPos, setSaverPos] = useState({ x: 50, y: 50 });
   const saverRef = useRef(false);
@@ -331,6 +332,7 @@ export default function App() {
     setNet((o) => (o.type === n.type && o.level === n.level ? o : n));
   }, []);
   useActiveTick(pollNet, 30000, hasBridge);
+  useActiveTick(() => { const b = bridge(); if (b) setIsDefault(b.isDefaultLauncher()); }, 0, hasBridge); // kiểm tra lại mỗi khi quay về launcher (sau khi người dùng chọn trong hệ thống)
   useNativeEvent("__netChanged", pollNet);
 
   // Bìa album trong thư viện GRAPE2Play (nếu app cung cấp ContentProvider), tải lại khi quay về launcher
@@ -865,6 +867,12 @@ export default function App() {
                   <div className="mt-2.5">
                     {hasBridge ? (
                       <div className="grid grid-cols-1 gap-1.5">
+                        <SBtn r={rad(10)} onClick={() => {
+                          const r = bridge()?.setDefaultLauncher();
+                          if (r === "none") showToast("TV không cho đổi: nhấn HOME, chọn GRAPE2TV Pro rồi chọn “Luôn dùng”, hoặc vào Cài đặt TV > Ứng dụng > Ứng dụng mặc định.");
+                          else if (isDefault) showToast("GRAPE2TV Pro đã là launcher mặc định.");
+                          else setSettingsOpen(false);
+                        }}>{isDefault ? "✓ Đang là launcher mặc định" : "Đặt làm launcher mặc định"}</SBtn>
                         <SBtn r={rad(10)} onClick={() => bridge()?.openNotificationAccess()}>Cấp quyền hiển thị nhạc</SBtn>
                         <SBtn r={rad(10)} onClick={checkMusic}>Kiểm tra nhạc (chẩn đoán GRAPE2Play)</SBtn>
                         <SBtn r={rad(10)} onClick={() => setDiag(bridge()?.getDiagnostics() || "")}>Chẩn đoán treo / màn hình đen</SBtn>

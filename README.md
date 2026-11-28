@@ -32,12 +32,12 @@ D-pad di chuyển giữa ô; OK mở/chọn; Back đóng Cài đặt/thoát ch�
 - CSS: bỏ `backdrop-filter` trên từng ô app, bỏ blob `filter: blur`, giảm blur panel, bỏ animation repaint. "Chuyển động nhẹ" tự bật mặc định trên thiết bị ≤2 GB RAM / ≤4 lõi.
 
 ## Cài đặt cần chỉnh nếu khác
-`web/src/App.tsx` (đầu file): `GRAPE_PKG` (gói GRAPE2Play, mặc định com.grape.play), `REPO` (kho cập nhật: `PhungP/GRAPE2TV-Pro`). `app/build.gradle.kts`: `versionName` (versionCode tự suy ra: 1.2.0 → 10200).
+`web/src/App.tsx` (đầu file): `GRAPE_PKG` (gói GRAPE2Play, mặc định com.grape.play), `REPO` (kho cập nhật: `PhungP/GRAPE2TV-Pro`). `app/build.gradle.kts`: `versionName` (versionCode tự suy ra: 1.2.1 → 10201).
 
 ## Phát hành & cập nhật online
 - Kho: https://github.com/PhungP/GRAPE2TV-Pro (URL cũ `grape2launcher` được GitHub tự chuyển hướng).
 - Quy ước: tag `vX.Y.Z`, tiêu đề `GRAPE2TV Pro X.Y.Z`, file `GRAPE2TV-Pro.apk` (đổi tên file build thành tên này khi đính vào Release). Nội dung `RELEASE_NOTES.md` hiện ở mục Cập nhật.
-- `gh release create v1.2.0 GRAPE2TV-Pro.apk --title "GRAPE2TV Pro 1.2.0" --notes-file RELEASE_NOTES.md`
+- `gh release create v1.2.1 GRAPE2TV-Pro.apk --title "GRAPE2TV Pro 1.2.1" --notes-file RELEASE_NOTES.md`
 - Trước khi phát hành: `apksigner verify --print-certs` phải cho cùng chứng chỉ với bản đang chạy trên TV.
 - Bìa album thư viện: GRAPE2Play cung cấp ContentProvider `content://com.grape.play.library/albums` (cột `cover`). Chưa có thì dùng bìa các bài đã phát.
 

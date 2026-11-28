@@ -1,4 +1,1 @@
-- Bỏ dòng chữ chân trang và sóng nhạc mini
-- Thời tiết: bỏ khung, đặt giữa màn hình cho cân đối
-- Thêm tuỳ chọn cỡ hộp Đang phát (Nhỏ / Vừa / Lớn)
-- Thư viện: con trỏ di chuyển giữa các album, bấm OK để mở album trong GRAPE2Play (cần GRAPE2Play hỗ trợ)
+- Thêm tuỳ chọn "Đặt làm launcher mặc định" (Cài đặt → Hệ thống), hiển thị trạng thái đang là mặc định

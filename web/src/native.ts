@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 export type AndroidBridge = {
   ready(): void; reportError(msg: string, fatal: boolean): void; recover(): void; log(event: string, detail: string): void; getDiagnostics(): string;
   getApps(): string; launch(pkg: string): boolean; launchWith(pkg: string, extra: string): boolean; getArt(): string; getNowPlaying(): string; getProgress(): string; media(action: string): void;
-  openNotificationAccess(): void; openSystemSettings(): void; openWifiSettings(): void; getNetwork(): string; getLibraryAlbums(): string; openAlbum(id: string, title: string): boolean; debugSessions(): string; fetchText(url: string, id: string): void; getInfo(): string;
+  openNotificationAccess(): void; openSystemSettings(): void; openWifiSettings(): void; getNetwork(): string; getLibraryAlbums(): string; openAlbum(id: string, title: string): boolean; isDefaultLauncher(): boolean; setDefaultLauncher(): string; debugSessions(): string; fetchText(url: string, id: string): void; getInfo(): string;
   downloadAndInstall(url: string): void; getDownloadProgress(): number;
 };
 declare global { interface Window { Android?: AndroidBridge; __onBack?: () => boolean; __cb?: (id: string, text: string) => void; __setActive?: (a: boolean) => void; __mediaChanged?: () => void; __netChanged?: () => void; __appsChanged?: () => void; __alive?: () => number } }
