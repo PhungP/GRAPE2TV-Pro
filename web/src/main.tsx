@@ -9,8 +9,10 @@ const report = (m: string) => { try { bridge()?.reportError(m.slice(0, 240), fal
 window.addEventListener("error", (e) => report(`error: ${e.message}`));
 window.addEventListener("unhandledrejection", (e) => report(`promise: ${String((e.reason && (e.reason.message || e.reason)) || "?")}`));
 
+bridge()?.log("boot", "module-start");
 try {
   createRoot(document.getElementById("root")!).render(<Boundary name="root" fatal><App /></Boundary>);
+  bridge()?.log("boot", "render-called");
 } catch (e) {
   bridge()?.reportError(`mount: ${String(e)}`, true);   // Android sẽ phục hồi có giới hạn thay vì để màn hình đen
 }

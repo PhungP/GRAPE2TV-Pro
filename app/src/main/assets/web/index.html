@@ -4,10 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GRAPE2TV Pro</title>
-    <script type="module" crossorigin src="./assets/index-A-RHgP-n.js"></script>
+    <script type="module" crossorigin src="./assets/index-BegU5z_Y.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-D-ceqT1G.css">
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Chạy trước bundle: ghi lại lỗi nạp/parse script (kể cả khi WebView quá cũ) để Android đọc được khi chẩn đoán
+      window.__boot = { errs: [] };
+      window.addEventListener("error", function (e) { try { window.__boot.errs.push(String(e.message || (e.target && e.target.src) || "?").slice(0, 160)); } catch (_) {} }, true);
+      try { window.Android && window.Android.log("boot", "html ua=" + navigator.userAgent.slice(-70)); } catch (_) {}
+    </script>
   </body>
 </html>

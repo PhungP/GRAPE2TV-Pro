@@ -1,1 +1,2 @@
-- Thêm tuỳ chọn "Đặt làm launcher mặc định" (Cài đặt → Hệ thống), hiển thị trạng thái đang là mặc định
+- Sửa lỗi hiện màn hình lỗi "startup-timeout" dù giao diện có thể đang chạy: nay app kiểm tra trang trước khi phục hồi
+- Ghi nhật ký khởi động, lỗi console và phiên bản WebView; màn hình lỗi hiển thị phiên bản và nhật ký chi tiết hơn để chẩn đoán

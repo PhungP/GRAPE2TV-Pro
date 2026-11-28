@@ -11,7 +11,9 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -53,7 +55,26 @@ class MainActivity : android.app.Activity() {
     private val attempts = ArrayDeque<Long>()
     private var healthToken = 0
     private var destroyed = false
-    private val watchdog = Runnable { if (state == State.INITIALIZING) recover("startup-timeout") }
+    private val watchdog = Runnable { if (state == State.INITIALIZING) probeThenRecover() }
+    private var lastConsoleAt = 0L
+
+    /**
+     * Quá hạn mà chưa nhận ready: hỏi thẳng trang xem giao diện đã dựng chưa trước khi huỷ WebView.
+     * root có phần tử → giao diện ĐANG chạy, chỉ là tín hiệu ready bị mất → coi là READY (không phá giao diện đang dùng được).
+     * Ngược lại ghi lại bằng chứng (lỗi nạp script, trạng thái trang, cầu nối) rồi mới phục hồi.
+     */
+    private fun probeThenRecover() {
+        val wv = webView ?: return recover("startup-timeout")
+        val token = ++healthToken
+        wv.evaluateJavascript("(function(){var b=window.__boot||{};var r=document.getElementById('root');return JSON.stringify({root:r?r.childElementCount:-1,rs:document.readyState,bridge:typeof window.Android,errs:b.errs||[]})})()") { v ->
+            if (token != healthToken) return@evaluateJavascript
+            healthToken++
+            Diag.w("probe", v ?: "null")
+            val up = v != null && Regex("\"root\\\\?\":([0-9]+)").find(v)?.groupValues?.get(1)?.toIntOrNull()?.let { it > 0 } == true
+            if (up) { Diag.w("probe", "UI is up, ready signal missing -> READY"); markReady() } else recover("startup-timeout")
+        }
+        main.postDelayed({ if (token == healthToken) { healthToken++; Diag.w("probe", "no answer from page"); recover("startup-timeout-hang") } }, 4000)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,6 +122,7 @@ class MainActivity : android.app.Activity() {
                 isVerticalScrollBarEnabled = false
                 addJavascriptInterface(bridge, "Android")
                 webViewClient = client
+                webChromeClient = chrome
             }
             webView = wv
             bridge.webView = wv
@@ -152,9 +174,9 @@ class MainActivity : android.app.Activity() {
         Diag.w("state", "FAILED: $msg")
         fallback?.let { root.removeView(it) }
         fallback = TextView(this).apply {
-            setTextColor(Color.parseColor("#F4F2F8")); textSize = 20f; gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#F4F2F8")); textSize = 15f; gravity = Gravity.CENTER
             setPadding(80, 40, 80, 40)
-            text = "GRAPE2TV Pro\n\n$msg\n\nBấm OK để thử lại.\n\n" + Diag.dump(8)
+            text = "GRAPE2TV Pro ${BuildConfigVersion.name(this@MainActivity)}\n\n$msg\n\nBấm OK để thử lại.\n\n" + Diag.dump(14)
             isFocusable = true
         }
         root.addView(fallback, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -166,6 +188,17 @@ class MainActivity : android.app.Activity() {
         attempts.clear()
         Diag.i("recover", "manual retry")
         createWebView()
+    }
+
+    // Lỗi/cảnh báo từ console của trang (kể cả lỗi parse bundle) → nhật ký chẩn đoán; giới hạn tần suất
+    private val chrome = object : WebChromeClient() {
+        override fun onConsoleMessage(m: ConsoleMessage): Boolean {
+            if (m.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                val now = System.currentTimeMillis()
+                if (now - lastConsoleAt > 1000) { lastConsoleAt = now; Diag.w("console", "${m.message().take(160)} @${m.sourceId().substringAfterLast('/')}:${m.lineNumber()}") }
+            }
+            return true
+        }
     }
 
     private val client = object : WebViewClient() {
@@ -268,4 +301,8 @@ class MainActivity : android.app.Activity() {
         destroyWebView()
         super.onDestroy()
     }
+}
+
+private object BuildConfigVersion {
+    fun name(c: android.content.Context): String = try { c.packageManager.getPackageInfo(c.packageName, 0).versionName ?: "" } catch (_: Exception) { "" }
 }

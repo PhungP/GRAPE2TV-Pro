@@ -7,6 +7,12 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Chạy trước bundle: ghi lại lỗi nạp/parse script (kể cả khi WebView quá cũ) để Android đọc được khi chẩn đoán
+      window.__boot = { errs: [] };
+      window.addEventListener("error", function (e) { try { window.__boot.errs.push(String(e.message || (e.target && e.target.src) || "?").slice(0, 160)); } catch (_) {} }, true);
+      try { window.Android && window.Android.log("boot", "html ua=" + navigator.userAgent.slice(-70)); } catch (_) {}
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
