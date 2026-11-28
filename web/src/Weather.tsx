@@ -106,7 +106,7 @@ function RetryBtn({ onClick, label, r }: { onClick: () => void; label: string; r
 function WeatherInner({ rad }: { rad: number }) {
   const { saved, loading, err, retry } = useWeather();
   const r = rad === 4 ? 4 : 10;
-  const shell = "t-panel flex items-center gap-3 px-3.5 py-2.5";
+  const shell = "flex items-center gap-4";
 
   if (!saved) {   // chưa có dữ liệu nào
     return (
@@ -132,7 +132,7 @@ function WeatherInner({ rad }: { rad: number }) {
         <p key={wx.temp} className="wx-fade mt-1 flex items-baseline gap-2 whitespace-nowrap"><span className="text-[28px] font-extrabold tabular-nums leading-none">{wx.temp}°</span><span className="text-[13px] font-semibold text-[var(--muted-2)]">{wx_desc(wx.code)}</span></p>
         {note && <p className={`mt-1 text-[10px] ${err || stale ? "text-amber-300" : "text-[var(--muted)]"}`}>{note}</p>}
       </div>
-      <div className="hidden shrink-0 items-center gap-4 border-l border-white/15 pl-4 min-[900px]:flex">
+      <div className="hidden shrink-0 items-center gap-5 border-l border-white/15 pl-5 min-[900px]:flex">
         <Stat label="Cảm giác" value={`${wx.feels}°`} />
         <Stat label="Cao / Thấp" value={`${wx.hi}° / ${wx.lo}°`} />
         <Stat label="Mưa" value={`${wx.rain}%`} />

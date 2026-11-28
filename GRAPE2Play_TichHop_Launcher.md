@@ -128,3 +128,11 @@ Phát một bài trong GRAPE2Play → về launcher → **Cài đặt → Hệ t
   Hỗ trợ: tiếp có, trước có, tua có
 ```
 Dòng nào ghi **KHÔNG** thì mục tương ứng ở bảng mục 1 sẽ trống. Nếu báo "Không thấy phiên nhạc nào" thì GRAPE2Play chưa tạo MediaSession đang hoạt động (mục 2).
+
+## Chọn album từ ô Thư viện (GRAPE2TV Pro ≥ 1.2.0)
+Con trỏ remote di chuyển giữa các bìa album trong ô Thư viện; bấm OK trên một bìa sẽ mở GRAPE2Play với các extra:
+- `grape_open = "library"`
+- `grape_album_id` — giá trị cột `_id` của album (nếu provider cung cấp)
+- `grape_album_title` — giá trị cột `title` (nếu có)
+
+ContentProvider `content://com.grape.play.library/albums` nên trả thêm cột `_id` và `title` (ngoài `cover`); nếu thiếu, launcher chỉ mở thư viện chung. GRAPE2Play cần đọc các extra trên để nhảy thẳng tới album.

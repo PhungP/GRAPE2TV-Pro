@@ -172,19 +172,15 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .t-focus:focus-visible, .t-focus.is-focused { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); border-color: var(--accent) !important; }
 .theme-xperia .t-focus:focus-visible, .theme-xperia .t-focus.is-focused { box-shadow: 0 0 0 1px var(--bg), 0 0 0 2px var(--accent); }
 
-@keyframes vu { 0%,100% { transform: scaleY(.22); } 50% { transform: scaleY(1); } }
-.vu-bar { transform-origin: bottom; animation: vu .72s ease-in-out infinite; }
-.vu-paused .vu-bar { animation-play-state: paused; transform: scaleY(.22); }
 @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 .toast-in { animation: toastIn .22s ease-out both; }
 .progress-fill { transition: width .9s linear; }
-@media (prefers-reduced-motion: reduce) { .vu-bar { animation: none !important; } }
 @media (prefers-color-scheme: dark) { :root { color-scheme: dark; } }
 
 /* TV: tắt hiệu ứng nặng khi bật "Chuyển động nhẹ" */
 .soft .t-panel, .soft .rail, .soft .theme-switch { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
 .soft .blobs { display: none; }
-.soft .vu-bar, .soft .toast-in { animation: none !important; }
+.soft .toast-in { animation: none !important; }
 .soft .progress-fill { transition: none; }
 .soft .t-panel, .soft .t-card { box-shadow: none !important; }
 .soft .app-shell-bg { background: var(--bg) !important; }

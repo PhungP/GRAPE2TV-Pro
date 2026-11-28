@@ -1,5 +1,4 @@
-- Ổn định hơn: tự phục hồi khi giao diện bị treo hoặc màn hình đen (renderer WebView bị kill), có giới hạn số lần thử và màn hình lỗi bấm OK để thử lại
-- Thẻ thời tiết mới: icon lớn, nhiệt độ, cảm giác, cao/thấp, khả năng mưa; xử lý mất mạng, quá hạn, dữ liệu cũ và nút Thử lại
-- Chẩn đoán: Cài đặt → Hệ thống → "Chẩn đoán treo / màn hình đen"
-- Cập nhật an toàn hơn: kiểm tra gói, chữ ký và phiên bản trước khi cài; chặn hạ cấp
-- Giảm RAM khi đọc ảnh bìa nhạc; luồng nền gọn hơn
+- Bỏ dòng chữ chân trang và sóng nhạc mini
+- Thời tiết: bỏ khung, đặt giữa màn hình cho cân đối
+- Thêm tuỳ chọn cỡ hộp Đang phát (Nhỏ / Vừa / Lớn)
+- Thư viện: con trỏ di chuyển giữa các album, bấm OK để mở album trong GRAPE2Play (cần GRAPE2Play hỗ trợ)

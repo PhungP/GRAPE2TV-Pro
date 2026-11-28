@@ -11,9 +11,11 @@ type IconSize = "sm" | "md" | "lg";
 type LibSize = "sm" | "md" | "lg";
 type WallKind = "default" | "picsum" | "bing";
 type SaverStyle = "clock" | "wall";
-type SettingsValue = { theme: Theme; clock24: boolean; vuOn: boolean; softMotion: boolean; iconSize: IconSize; libSize: LibSize; wall: WallKind; wallSeed: number; saverMin: number; saverStyle: SaverStyle };
+type SettingsValue = { theme: Theme; clock24: boolean; softMotion: boolean; iconSize: IconSize; libSize: LibSize; npSize: LibSize; wall: WallKind; wallSeed: number; saverMin: number; saverStyle: SaverStyle };
 // Ô Thư viện: Nhỏ = nhiều bìa nhỏ, Lớn = ít bìa nhưng to
 const LIB_SIZES: Record<LibSize, { label: string; n: number; cols: number }> = { sm: { label: "Nhỏ", n: 9, cols: 3 }, md: { label: "Vừa", n: 4, cols: 2 }, lg: { label: "Lớn", n: 1, cols: 1 } };
+// Hộp "Đang phát": rộng (vw) / ảnh bìa (px) / cỡ chữ tên bài
+const NP_SIZES: Record<LibSize, { label: string; w: number; art: number; title: number }> = { sm: { label: "Nhỏ", w: 42, art: 60, title: 16 }, md: { label: "Vừa", w: 50, art: 72, title: 18 }, lg: { label: "Lớn", w: 60, art: 96, title: 22 } };
 const ORDER_KEY = "grape-app-order";
 const COVERS_KEY = "grape-covers";
 const readJson = <T,>(k: string, fb: T): T => { try { return JSON.parse(localStorage.getItem(k) || "null") ?? fb; } catch { return fb; } };
@@ -21,7 +23,8 @@ const writeJson = (k: string, v: unknown) => { try { localStorage.setItem(k, JSO
 const verParts = (v: string) => v.replace(/^v/i, "").split(".").map((n) => parseInt(n, 10) || 0);
 const isNewer = (a: string, b: string) => { const x = verParts(a), y = verParts(b); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
 type Net = { type: string; level: number };
-type Cover = { src?: string; hue?: string; mark?: string };
+type Cover = { src?: string; hue?: string; mark?: string; id?: string; title?: string };
+type LibAlbum = { cover: string; id?: string; title?: string };
 function Seg({ label, value, options, onChange, r }: { label: string; value: string; options: Array<{ v: string; t: string }>; onChange: (v: string) => void; r: number }) {
   return (
     <div role="radiogroup" aria-label={label} className="mt-2.5">
@@ -132,7 +135,7 @@ const lowEnd = (() => { const n = navigator as Navigator & { deviceMemory?: numb
 const GRAPE_PKG = "com.grape.play"; // gói của ứng dụng GRAPE2Play đầy đủ — sửa nếu khác
 const SETTINGS_KEY = "grape-launcher-settings";
 
-const DEFAULT_VERSION = "v1.1.1";
+const DEFAULT_VERSION = "v1.2.0";
 const REPO = "PhungP/GRAPE2TV-Pro"; // https://github.com/PhungP/GRAPE2TV-Pro — kho GitHub Releases dùng để kiểm tra cập nhật (URL cũ grape2launcher vẫn được GitHub chuyển hướng)
 
 const albums: Album[] = [
@@ -189,10 +192,10 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>("liquid");
-  const [vuOn, setVuOn] = useState(true);
   const [iconSize, setIconSize] = useState<IconSize>("lg");
   const [art, setArt] = useState("");
   const [libSize, setLibSize] = useState<LibSize>("md");
+  const [npSize, setNpSize] = useState<LibSize>("md");
   const [wall, setWall] = useState<WallKind>("default");
   const [wallSeed, setWallSeed] = useState(1);
   const [saverMin, setSaverMin] = useState(0);
@@ -206,7 +209,7 @@ export default function App() {
   const saverShownAt = useRef(0);
   const lastAct = useRef(Date.now());
   const [net, setNet] = useState<Net>({ type: "wifi", level: 4 });
-  const [providerCovers, setProviderCovers] = useState<string[]>([]);
+  const [providerCovers, setProviderCovers] = useState<Cover[]>([]);
   const [history, setHistory] = useState<Array<{ k: string; d: string }>>(() => readJson(COVERS_KEY, []));
   const [arrange, setArrange] = useState(false);
   const [picked, setPicked] = useState(false);
@@ -255,10 +258,10 @@ export default function App() {
       if (v) {
         if (v.theme === "liquid" || v.theme === "xperia") setTheme(v.theme);
         if (typeof v.clock24 === "boolean") setClock24(v.clock24);
-        if (typeof v.vuOn === "boolean") setVuOn(v.vuOn);
         if (typeof v.softMotion === "boolean") setSoftMotion(v.softMotion);
         if (v.iconSize === "sm" || v.iconSize === "md" || v.iconSize === "lg") setIconSize(v.iconSize);
         if (v.libSize === "sm" || v.libSize === "md" || v.libSize === "lg") setLibSize(v.libSize);
+        if (v.npSize === "sm" || v.npSize === "md" || v.npSize === "lg") setNpSize(v.npSize);
         if (v.wall === "default" || v.wall === "picsum" || v.wall === "bing") setWall(v.wall);
         if (typeof v.wallSeed === "number") setWallSeed(v.wallSeed);
         if (typeof v.saverMin === "number") setSaverMin(v.saverMin);
@@ -334,8 +337,8 @@ export default function App() {
   const loadCovers = useCallback(() => {
     const b = bridge();
     if (!b) return;
-    const list = safeJson<string[]>(b.getLibraryCovers(), []);
-    setProviderCovers(list.filter(Boolean).map((x) => `data:image/jpeg;base64,${x}`));
+    const list = safeJson<LibAlbum[]>(b.getLibraryAlbums(), []);
+    setProviderCovers(list.filter((x) => x && x.cover).map((x) => ({ src: `data:image/jpeg;base64,${x.cover}`, id: x.id, title: x.title })));
   }, []);
   useActiveTick(loadCovers, 0, hasBridge);
 
@@ -465,8 +468,8 @@ export default function App() {
   useEffect(() => () => { if (updateTimer.current) window.clearTimeout(updateTimer.current); }, []);
 
   const changeSetting = (patch: Partial<SettingsValue>) => {
-    const next: SettingsValue = { theme, clock24, vuOn, softMotion, iconSize, libSize, wall, wallSeed, saverMin, saverStyle, ...patch };
-    setTheme(next.theme); setClock24(next.clock24); setVuOn(next.vuOn); setSoftMotion(next.softMotion); setIconSize(next.iconSize); setLibSize(next.libSize);
+    const next: SettingsValue = { theme, clock24, softMotion, iconSize, libSize, npSize, wall, wallSeed, saverMin, saverStyle, ...patch };
+    setTheme(next.theme); setClock24(next.clock24); setSoftMotion(next.softMotion); setIconSize(next.iconSize); setLibSize(next.libSize); setNpSize(next.npSize);
     setWall(next.wall); setWallSeed(next.wallSeed); setSaverMin(next.saverMin); setSaverStyle(next.saverStyle);
     persist(next);
   };
@@ -476,6 +479,13 @@ export default function App() {
     const b = bridge();
     if (!b) { showToast("Đang mở GRAPE2Play — trình phát đầy đủ…"); return; }
     if (!b.launch(GRAPE_PKG)) showToast("Chưa cài GRAPE2Play trên TV này.");
+  };
+  // Chọn một album trong ô Thư viện: mở GRAPE2Play ở đúng album nếu có mã (nếu không thì mở thư viện)
+  const openAlbum = (c: Cover) => {
+    const b = bridge();
+    if (!b) { showToast(c.title ? `Đang mở album “${c.title}”…` : "Đang mở Thư viện âm nhạc…"); return; }
+    const ok = c.id || c.title ? b.openAlbum(c.id || "", c.title || "") : b.launchWith(GRAPE_PKG, "library");
+    if (!ok) showToast("Chưa cài GRAPE2Play trên TV này.");
   };
   const openLibrary = () => {
     const b = bridge();
@@ -608,13 +618,13 @@ export default function App() {
   const sz = ICON_SIZES[iconSize];
   const nextUp: QItem[] = hasBridge ? (session?.queue || []) : albums.slice(1, 5).map((a) => ({ title: a.title, artist: a.detail }));
   const lib = LIB_SIZES[libSize];
-  const realCovers = providerCovers.length ? providerCovers : history.map((h) => h.d);
+  const realCovers: Cover[] = providerCovers.length ? providerCovers : history.map((h) => ({ src: h.d }));
+  const np = NP_SIZES[npSize];
   const covers: Cover[] = hasBridge
-    ? Array.from({ length: lib.n }, (_, i) => (realCovers[i] ? { src: realCovers[i] } : {}))
+    ? Array.from({ length: lib.n }, (_, i) => realCovers[i] || {})
     : albums.slice(0, lib.n).map((a) => ({ hue: a.hue, mark: a.mark }));
 
   const rad = (n: number) => (isXperia ? 4 : n);
-  const vuBars = [0.9, 0.55, 1, 0.4, 0.75, 0.9, 0.5, 1, 0.65, 0.85, 0.45, 0.7];
 
   return (
     <div data-safe-area-inset-root style={{ boxSizing: "border-box", minHeight: "100dvh" }} className={`app-shell overflow-x-clip theme-${theme}${softMotion ? " soft" : ""}`}>
@@ -627,13 +637,11 @@ export default function App() {
       <div className="relative mx-auto flex min-h-dvh w-full max-w-[1600px] flex-col" onKeyDown={onKeys} {...({ inert: settingsOpen ? "" : undefined } as Record<string, unknown>)}>
         <main className="min-w-0 flex-1 px-[5vw] pb-[6vh] pt-[4vh]">
           {/* ĐỒNG HỒ + THỜI TIẾT (trái) — Wi-Fi + CÀI ĐẶT (góc phải) */}
-          <header className="flex items-start justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-5">
-              <ClockBlock clock24={clock24} rad={rad(999)} />
-              <WeatherCard rad={rad(999) === 999 ? 14 : 4} />
-            </div>
+          <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-4">
+            <div className="flex min-w-0 justify-start"><ClockBlock clock24={clock24} rad={rad(999)} /></div>
+            <WeatherCard rad={rad(999) === 999 ? 14 : 4} />
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center justify-end gap-2 self-start">
               <button type="button" onClick={() => (bridge() ? bridge()!.openWifiSettings() : showToast("Mở cài đặt Wi-Fi"))} aria-label="Wi-Fi" title="Cài đặt Wi-Fi"
                 className="t-btn t-focus grid h-8 w-8 shrink-0 place-items-center border border-white/20 bg-white/5 hover:bg-white/10" style={{ borderRadius: rad(999) }}>
                 <WifiIcon net={net} />
@@ -646,45 +654,39 @@ export default function App() {
           </header>
 
           {/* THƯ VIỆN (vuông, trái) — ĐANG PHÁT (giữa màn hình) — TIẾP THEO (phải) */}
-          <section aria-label="Thư viện, đang phát, tiếp theo" className="mt-[3vh] grid items-start gap-3" style={{ gridTemplateColumns: "minmax(0,1fr) 50vw minmax(0,1fr)" }}>
+          <section aria-label="Thư viện, đang phát, tiếp theo" className="mt-[3vh] grid items-start gap-3" style={{ gridTemplateColumns: `minmax(0,1fr) ${np.w}vw minmax(0,1fr)` }}>
             <div className="pt-6">
-              <button onClick={openLibrary} aria-label="Thư viện âm nhạc" className="t-card t-focus relative block aspect-square w-full overflow-hidden text-left">
-                <span className="absolute inset-2 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${lib.cols}, minmax(0, 1fr))`, gridAutoRows: "minmax(0, 1fr)" }}>
+              <div className="t-card relative block aspect-square w-full overflow-hidden">
+                <div className="absolute inset-2 bottom-9 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${lib.cols}, minmax(0, 1fr))`, gridAutoRows: "minmax(0, 1fr)" }}>
                   {covers.map((c, i) => (
-                    <span key={i} className="relative block overflow-hidden" style={{ borderRadius: rad(10), background: c.src ? "transparent" : c.hue || "rgba(255,255,255,.07)" }}>
+                    <button key={i} type="button" onClick={() => openAlbum(c)} aria-label={c.title ? `Album ${c.title}` : "Album trong thư viện"} className="t-focus relative block min-h-0 overflow-hidden"
+                      style={{ borderRadius: rad(10), background: c.src ? "transparent" : c.hue || "rgba(255,255,255,.07)" }}>
                       {c.src ? <img src={c.src} alt="" className="h-full w-full object-cover" />
                         : <span className="absolute inset-0 grid place-items-center text-base font-extrabold text-white/70">{c.mark || <Library size={18} className="opacity-40" />}</span>}
-                    </span>
+                    </button>
                   ))}
-                </span>
-                <span className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/80 to-transparent px-2.5 pb-2 pt-7">
+                </div>
+                <button type="button" onClick={openLibrary} aria-label="Mở thư viện âm nhạc" className="t-focus absolute inset-x-1.5 bottom-1.5 flex h-7 items-center gap-1.5 bg-black/40 px-2 text-left" style={{ borderRadius: rad(8) }}>
                   <Library size={14} className="shrink-0 accent-text" /><span className="truncate text-[11px] font-bold">Thư viện âm nhạc</span>
-                </span>
-              </button>
+                </button>
+              </div>
             </div>
 
             <div className="flex min-w-0 flex-col">
               <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.22em] accent-text">Đang phát</p>
               <div className="t-panel t-panel-hero relative flex-1 overflow-hidden p-3">
                 <div className="flex items-center gap-3">
-                  <button onClick={openGrape} aria-label={`Mở GRAPE2Play, đang phát ${album.title}`} className="t-focus relative h-[72px] w-[72px] shrink-0 overflow-hidden"
-                    style={{ borderRadius: rad(18), background: art || grapeIcon ? "transparent" : album.hue }}>
+                  <button onClick={openGrape} aria-label={`Mở GRAPE2Play, đang phát ${album.title}`} className="t-focus relative shrink-0 overflow-hidden"
+                    style={{ width: np.art, height: np.art, borderRadius: rad(18), background: art || grapeIcon ? "transparent" : album.hue }}>
                     {art ? <img src={art} alt="" className="h-full w-full object-cover" />
                       : grapeIcon ? <img src={`data:image/png;base64,${grapeIcon}`} alt="GRAPE2Play" className="h-full w-full object-contain" />
                       : <span className="absolute inset-0 grid place-items-center text-white/95"><Grape size={34} /></span>}
                   </button>
                   <button onClick={openGrape} className="t-focus min-w-0 flex-1 text-left">
-                    <span className="block truncate text-lg font-bold leading-tight">{album.title}</span>
+                    <span className="block truncate font-bold leading-tight" style={{ fontSize: np.title }}>{album.title}</span>
                     <span className="mt-0.5 block truncate text-xs text-[var(--muted-2)]">{album.detail}</span>
                     <span className="mt-1 block text-[11px] font-semibold accent-text">{hasBridge && !session?.title ? "" : playing ? "● Đang phát" : "❚❚ Tạm dừng"}</span>
                   </button>
-                  {vuOn && (
-                    <div aria-hidden="true" className={`flex h-8 shrink-0 items-end gap-[3px] ${playing ? "" : "vu-paused"}`}>
-                      {vuBars.map((h, i) => (
-                        <span key={i} className="vu-bar w-[3px] rounded-full bg-gradient-to-t from-[var(--accent-2)] to-[var(--accent)]" style={{ height: `${Math.round(h * 100)}%`, animationDelay: `${i * 0.09}s`, animationDuration: `${0.6 + (i % 4) * 0.14}s` }} />
-                      ))}
-                    </div>
-                  )}
                 </div>
                 <ProgressBar hasBridge={hasBridge} playing={playing} title={session?.title || ""} simElapsed={simElapsed} simTotal={simTotal} />
                 <div className="mt-3 flex items-center justify-center gap-3">
@@ -747,10 +749,6 @@ export default function App() {
             </section>
           )}
 
-          <footer className="mt-6 flex flex-col items-center gap-1 border-t hairline-x pt-3 text-center sm:flex-row sm:justify-between sm:text-left">
-            <p className="text-[11px] text-[var(--muted)]">GRAPE2TV Pro • {CURRENT_VERSION} • Nhẹ • Mượt • Nhanh</p>
-            <p className="text-[12px] italic font-semibold gold-text">Hi-Fi ecosystem — GRAPE2</p>
-          </footer>
         </main>
       </div>
 
@@ -802,7 +800,7 @@ export default function App() {
                     <Toggle label="Chuyển động nhẹ (giảm mờ, bóng, hiệu ứng)" on={softMotion} r={rad(10)} onChange={(v) => changeSetting({ softMotion: v })} />
                     <p className="mb-0 mt-3 text-[10px] font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Music Center</p>
                     <Seg label="Cỡ ô Thư viện" value={libSize} r={rad(10)} options={(["sm", "md", "lg"] as LibSize[]).map((k) => ({ v: k, t: LIB_SIZES[k].label }))} onChange={(v) => changeSetting({ libSize: v as LibSize })} />
-                    <Toggle label="Sóng nhạc VU mini" on={vuOn} r={rad(10)} onChange={(v) => changeSetting({ vuOn: v })} />
+                    <Seg label="Cỡ hộp Đang phát" value={npSize} r={rad(10)} options={(["sm", "md", "lg"] as LibSize[]).map((k) => ({ v: k, t: NP_SIZES[k].label }))} onChange={(v) => changeSetting({ npSize: v as LibSize })} />
                     <div className="mt-2.5 flex gap-1.5">
                       <SBtn r={rad(10)} onClick={startArrange} className="flex-1">Sắp xếp ứng dụng</SBtn>
                       <SBtn r={rad(10)} onClick={resetOrder}>Đặt lại</SBtn>

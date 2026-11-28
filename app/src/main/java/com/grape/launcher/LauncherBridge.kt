@@ -258,6 +258,18 @@ class LauncherBridge(private val activity: Activity) {
         return try { activity.runOnUiThread { activity.startActivity(intent) }; true } catch (_: Exception) { false }
     }
 
+    /** Mở GRAPE2Play thẳng tới một album trong thư viện (extra: grape_open=library, grape_album_id, grape_album_title). */
+    @JavascriptInterface
+    fun openAlbum(id: String, title: String): Boolean {
+        val pm = ctx.packageManager
+        val pkg = "com.grape.play"
+        val intent = pm.getLeanbackLaunchIntentForPackage(pkg) ?: pm.getLaunchIntentForPackage(pkg) ?: return false
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("grape_open", "library")
+        if (id.isNotEmpty()) intent.putExtra("grape_album_id", id)
+        if (title.isNotEmpty()) intent.putExtra("grape_album_title", title)
+        return try { activity.runOnUiThread { activity.startActivity(intent) }; true } catch (_: Exception) { false }
+    }
+
     // ---------- Nhạc đang phát (MediaSession) ----------
 
     private fun queryControllers(): List<MediaController>? {
@@ -567,16 +579,25 @@ class LauncherBridge(private val activity: Activity) {
      * Chưa có provider → trả mảng rỗng, giao diện dùng bìa của các bài đã phát.
      */
     @JavascriptInterface
-    fun getLibraryCovers(): String {
+    fun getLibraryAlbums(): String {
         val nowMs = SystemClock.elapsedRealtime()
         coversJson?.let { if (nowMs - coversAt < 30_000) return it }
         val arr = JSONArray()
+        val uri = Uri.parse("content://com.grape.play.library/albums")
         try {
-            ctx.contentResolver.query(Uri.parse("content://com.grape.play.library/albums"), arrayOf("cover"), null, null, null)?.use { c ->
+            // Thử lấy thêm mã (_id) và tên album nếu GRAPE2Play cung cấp; nếu provider không có các cột đó thì chỉ lấy ảnh bìa
+            val cursor = try { ctx.contentResolver.query(uri, arrayOf("cover", "_id", "title"), null, null, null) }
+                catch (_: Exception) { ctx.contentResolver.query(uri, arrayOf("cover"), null, null, null) }
+            cursor?.use { c ->
+                val iId = c.getColumnIndex("_id"); val iTitle = c.getColumnIndex("title")
                 while (c.moveToNext() && arr.length() < 12) {
                     val blob = c.getBlob(0) ?: continue
                     val bmp = decodeBlob(blob) ?: continue
-                    arr.put(encodeThumb(bmp, 82, owned = true))
+                    arr.put(JSONObject().apply {
+                        put("cover", encodeThumb(bmp, 82, owned = true))
+                        if (iId >= 0) put("id", c.getString(iId) ?: "")
+                        if (iTitle >= 0) put("title", c.getString(iTitle) ?: "")
+                    })
                 }
             }
         } catch (_: Throwable) { /* chưa có provider / không đọc được / thiếu RAM */ }

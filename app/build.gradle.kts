@@ -5,8 +5,8 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// Chỉ cần sửa versionName ở đây (hoặc truyền -PversionName=1.0.2); versionCode tự suy ra: 1.1.1 -> 10101
-val appVersionName: String = (project.findProperty("versionName") as String?) ?: "1.1.1"
+// Chỉ cần sửa versionName ở đây (hoặc truyền -PversionName=1.0.2); versionCode tự suy ra: 1.2.0 -> 10200
+val appVersionName: String = (project.findProperty("versionName") as String?) ?: "1.2.0"
 val appVersionCode: Int = appVersionName.split(".").map { it.toIntOrNull() ?: 0 }.let { (it.getOrElse(0) { 0 } * 10000) + (it.getOrElse(1) { 0 } * 100) + it.getOrElse(2) { 0 } }
 
 // Tên file APK: GRAPE2TV-Pro-<phiên bản>-<loại>.apk
